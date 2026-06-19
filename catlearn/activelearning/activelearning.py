@@ -18,7 +18,9 @@ import warnings
 from ..regression.gp.calculator import BOCalculator, compare_atoms, copy_atoms
 from ..regression.gp.means import Prior_max
 from ..regression.gp.baseline import BornRepulsionCalculator
-
+import dill as pickle
+from ase.io import write
+import os
 
 class ActiveLearning:
     """
@@ -359,11 +361,8 @@ class ActiveLearning:
         return self.converged()
     
     def run_until_candidates(self, fmax=0.05, step=1, ml_steps=1000, max_unc=0.3, dtrust=None, **kwargs):
-        self.extra_initial_data()
         if self.converged():
-            self.message_system("Active learning is converged.")
             return None, True
-
         self.train_mlmodel()
 
         candidates, method_converged = self.find_next_candidates(
@@ -1423,14 +1422,31 @@ class ActiveLearning:
 
     def evaluate(self, candidate, is_predicted=False, **kwargs):
         "Evaluate the ASE atoms with the ASE calculator."
-        # Ensure that the candidate is not already in the database
+
         if self.use_database_check and not is_predicted:
             candidate, _ = self.ensure_not_in_database(candidate)
-        # Update the evaluated candidate
+
         self.update_candidate(candidate)
-        # Start the evaluation time
+
+        # NEW: write pending evaluation and save full AL/MLNEB state
+        if os.environ.get("CATLEARN_WRITE_EVAL_ONLY", "0") == "1":
+            pending_traj = os.environ.get("CATLEARN_PENDING_TRAJ", "pending_eval.traj")
+            state_pkl = os.environ.get("CATLEARN_STATE_PKL", "catlearn_state.pkl")
+
+            # Save exactly the structure that would otherwise be evaluated by VASP
+            write(pending_traj, self.candidate)
+
+            # Save full object state so the next Python call can continue
+            with open(state_pkl, "wb") as f:
+                pickle.dump(self, f)
+
+            self.message_system(
+                f"Pending evaluation written to {pending_traj}; state written to {state_pkl}."
+            )
+            raise SystemExit(0)
+
+        # Original code continues here
         self.eval_time = time()
-        # Calculate the energies and forces
         self.message_system("Performing evaluation.", end="\r")
         forces = self.candidate.get_forces(
             apply_constraint=self.apply_constraint
@@ -1438,32 +1454,6 @@ class ActiveLearning:
         self.energy_true = self.candidate.get_potential_energy(
             force_consistent=self.force_consistent
         )
-        self.message_system("Single-point calculation finished.")
-        # Store the evaluation time
-        self.eval_time = time() - self.eval_time
-        # Save deviation, fmax, and update steps
-        self.e_dev = abs(self.energy_true - self.energy_pred)
-        self.true_fmax = nanmax(norm(forces, axis=1))
-        self.steps += 1
-        # Store the data
-        if is_predicted:
-            # Store the candidate with predicted properties
-            self.save_trajectory(
-                self.pred_evaluated,
-                candidate,
-                mode=self.mode,
-            )
-        self.add_training([self.candidate])
-        self.save_data()
-        # Make a reference energy
-        if self.steps == 1:
-            atoms_ref = self.get_data_atoms()[0]
-            self.e_ref = atoms_ref.get_potential_energy()
-        # Store the best evaluated candidate
-        self.store_best_data(self.candidate)
-        # Make the summary table
-        self.make_summary_table()
-        return
 
     def update_candidate(self, candidate, dtol=1e-8, **kwargs):
         "Update the evaluated candidate with given candidate."
