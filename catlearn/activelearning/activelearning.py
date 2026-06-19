@@ -1429,15 +1429,15 @@ class ActiveLearning:
             self.message_system(
                 f"Pending evaluation written to {pending_traj}; state written to {state_pkl}."
             )
-        # Original code continues here
-        self.eval_time = time()
-        self.message_system("Performing evaluation.", end="\r")
-        forces = self.candidate.get_forces(
-            apply_constraint=self.apply_constraint
-        )
-        self.energy_true = self.candidate.get_potential_energy(
-            force_consistent=self.force_consistent
-        )
+        else:
+            self.eval_time = time()
+            self.message_system("Performing evaluation.", end="\r")
+            forces = self.candidate.get_forces(
+                apply_constraint=self.apply_constraint
+            )
+            self.energy_true = self.candidate.get_potential_energy(
+                force_consistent=self.force_consistent
+            )
 
     def update_candidate(self, candidate, dtol=1e-8, **kwargs):
         "Update the evaluated candidate with given candidate."
