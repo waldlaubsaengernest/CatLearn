@@ -357,6 +357,23 @@ class ActiveLearning:
         # Return and broadcast the best atoms
         self.broadcast_best_structures()
         return self.converged()
+    
+    def run_until_candidates(self, fmax=0.05, step=1, ml_steps=1000, max_unc=0.3, dtrust=None, **kwargs):
+        self.extra_initial_data()
+        if self.converged():
+            self.message_system("Active learning is converged.")
+            return None, True
+
+        self.train_mlmodel()
+
+        candidates, method_converged = self.find_next_candidates(
+            fmax=self.scale_fmax * fmax,
+            step=step,
+            ml_steps=ml_steps,
+            max_unc=max_unc,
+            dtrust=dtrust,
+        )
+        return candidates, method_converged
 
     def converged(self, *args, **kwargs):
         "Whether the active learning is converged."
