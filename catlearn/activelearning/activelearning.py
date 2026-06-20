@@ -21,6 +21,7 @@ from ..regression.gp.baseline import BornRepulsionCalculator
 import dill as pickle
 from ase.io import write
 import os
+from catlearn.mpi_helper import rank as mpi_rank, size as mpi_size, bcast, comm as mpicomm
 
 class ActiveLearning:
     """
@@ -619,7 +620,7 @@ class ActiveLearning:
                 **calc_kwargs,
             )
             if not use_derivatives and kappa > 0.0:
-                if world.rank == 0:
+                if mpi_rank() == 0:
                     warnings.warn(
                         "The Bayesian optimization calculator "
                         "with a positive kappa value and no derivatives "
@@ -1165,7 +1166,7 @@ class ActiveLearning:
         # Convergence of the method
         method_converged = False
         # Check if the method is running in parallel
-        if not self.parallel_run and self.rank != 0:
+        if not self.parallel_run and mpi_rank() != 0:
             return None, method_converged
         # Check if the previous structure were better
         self.initiate_structure(step=step)
@@ -1304,8 +1305,8 @@ class ActiveLearning:
             self.comm = world
         else:
             self.comm = comm
-        self.rank = self.comm.rank
-        self.size = self.comm.size
+        self.rank = mpi_rank()
+        self.size = mpi_size()
         return self
 
     def remove_parallel_setup(self):
@@ -1326,7 +1327,7 @@ class ActiveLearning:
         self.ml_train_time = time()
         # Check if the model should be trained on all CPUs
         if self.save_memory:
-            if self.rank != 0:
+            if mpi_rank() != 0:
                 return self.mlcalc
         # Update database with the points of interest
         if point_interest is not None:
@@ -1416,19 +1417,19 @@ class ActiveLearning:
 
         # NEW: write pending evaluation and save full AL/MLNEB state
         if os.environ.get("CATLEARN_WRITE_EVAL_ONLY", "0") == "1":
-            pending_traj = os.environ.get("CATLEARN_PENDING_TRAJ", "pending_eval.traj")
-            state_pkl = os.environ.get("CATLEARN_STATE_PKL", "catlearn_state.pkl")
-
-            # Save exactly the structure that would otherwise be evaluated by VASP
-            write(pending_traj, self.candidate)
-
-            # Save full object state so the next Python call can continue
-            with open(state_pkl, "wb") as f:
-                pickle.dump(self, f)
-
-            self.message_system(
-                f"Pending evaluation written to {pending_traj}; state written to {state_pkl}."
-            )
+            if mpi_rank() == 0:
+                pending_traj = os.environ.get("CATLEARN_PENDING_TRAJ", "pending_eval.traj")
+                state_pkl = os.environ.get("CATLEARN_STATE_PKL", "catlearn_state.pkl")
+                # Save exactly the structure that would otherwise be evaluated by VASP
+                write(pending_traj, candidate)
+                # Save full object state so the next Python call can continue
+                with open(state_pkl, "wb") as f:
+                    pickle.dump(self, f)
+                self.message_system(
+                    f"Pending evaluation written to {pending_traj}; state written to {state_pkl}."
+                )
+            mpi_comm = mpicomm()
+            mpi_comm.Barrier()
         else:
             self.eval_time = time()
             self.message_system("Performing evaluation.", end="\r")
@@ -1442,9 +1443,11 @@ class ActiveLearning:
     def update_candidate(self, candidate, dtol=1e-8, **kwargs):
         "Update the evaluated candidate with given candidate."
         # Broadcast the system to all cpus
-        if self.rank == 0:
+        if mpi_rank() == 0:
             candidate = candidate.copy()
-        candidate = broadcast(candidate, root=0, comm=self.comm)
+        else:
+            candidate = None
+        candidate = bcast(candidate, root=0)
         # Update the evaluated candidate with given candidate
         # Set positions
         self.candidate.set_positions(candidate.get_positions())
@@ -1483,20 +1486,20 @@ class ActiveLearning:
     def broadcast_predictions(self, **kwargs):
         "Broadcast the predictions."
         # Get energy and uncertainty and remove it from the list
-        if self.rank == 0:
+        if mpi_rank() == 0:
             self.energy_pred = self.pred_energies[0]
             self.pred_energies = self.pred_energies[1:]
             self.unc = self.uncertainties[0]
             self.uncertainties = self.uncertainties[1:]
         # Broadcast the predictions
-        self.energy_pred = broadcast(self.energy_pred, root=0, comm=self.comm)
-        self.unc = broadcast(self.unc, root=0, comm=self.comm)
-        self.pred_energies = broadcast(
+        self.energy_pred = bcast(self.energy_pred, root=0, comm=self.comm)
+        self.unc = bcast(self.unc, root=0, comm=self.comm)
+        self.pred_energies = bcast(
             self.pred_energies,
             root=0,
             comm=self.comm,
         )
-        self.uncertainties = broadcast(
+        self.uncertainties = bcast(
             self.uncertainties,
             root=0,
             comm=self.comm,
@@ -1583,7 +1586,7 @@ class ActiveLearning:
     ):
         "Ensure the candidate is not in database by perturb it."
         # Check if the method is running in parallel
-        if not self.parallel_run and self.rank != 0:
+        if not self.parallel_run and mpi_rank() != 0:
             return None
         # Ensure that the candidate is not already in the database
         candidate, was_in_database = self.ensure_not_in_database(
@@ -1656,7 +1659,7 @@ class ActiveLearning:
     def check_convergence(self, fmax, method_converged, **kwargs):
         "Check if the convergence criteria are fulfilled"
         converged = True
-        if self.rank == 0:
+        if mpi_rank() == 0:
             # Check if the method converged
             if not method_converged:
                 converged = False
@@ -1680,7 +1683,7 @@ class ActiveLearning:
                 if e_dif > uci:
                     converged = False
         # Broadcast convergence statement if MPI is used
-        converged = broadcast(converged, root=0, comm=self.comm)
+        converged = bcast(converged, root=0, comm=self.comm)
         # Check the convergence
         if converged:
             self.copy_best_structures()
@@ -1707,7 +1710,7 @@ class ActiveLearning:
             list of ASE Atoms objects: The best structures.
         """
         # Check if the method is running in parallel
-        if not self.parallel_run and self.rank != 0:
+        if not self.parallel_run and mpi_rank() != 0:
             return self.best_structures
         # Get the best structures with calculated properties
         self.best_structures = self.get_structures(
@@ -1724,7 +1727,7 @@ class ActiveLearning:
 
     def broadcast_best_structures(self):
         "Broadcast the best structures."
-        self.best_structures = broadcast(
+        self.best_structures = bcast(
             self.best_structures,
             root=0,
             comm=self.comm,
@@ -1794,7 +1797,7 @@ class ActiveLearning:
         Returns:
             self: The object itself.
         """
-        if self.rank == 0:
+        if mpi_rank() == 0:
             self.mlcalc.save_mlcalc(filename, **kwargs)
         return self
 
@@ -1944,7 +1947,7 @@ class ActiveLearning:
 
     def message_system(self, message, obj=None, end="\n", is_warning=False):
         "Print output once."
-        if self.verbose is True and self.rank == 0:
+        if self.verbose is True and mpi_rank() == 0:
             if is_warning:
                 warnings.warn(message)
             else:
@@ -1983,7 +1986,7 @@ class ActiveLearning:
 
     def make_summary_table(self, **kwargs):
         "Make the summary of the optimization process as table."
-        if self.rank != 0:
+        if mpi_rank() != 0:
             return None, None
         now = datetime.datetime.now().strftime("%d %H:%M:%S")
         # Make the row for the summary table
@@ -2027,7 +2030,7 @@ class ActiveLearning:
     def print_statement(self, **kwargs):
         "Print the active learning process as a table."
         msg = ""
-        if self.rank == 0:
+        if mpi_rank() == 0:
             msg = "\n".join(self.print_list)
             self.save_summary_table(msg)
             self.message_system(msg)

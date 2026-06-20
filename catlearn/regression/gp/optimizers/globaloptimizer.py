@@ -13,12 +13,11 @@ from numpy import (
 )
 from scipy import __version__ as scipy_version
 from scipy.optimize import basinhopping, dual_annealing
-from ase.parallel import world
 from .optimizer import Optimizer
 from .linesearcher import GoldenSearch
 from .localoptimizer import ScipyOptimizer
 from ..hpboundary import EducatedBoundaries, VariableTransformation
-
+from catlearn.mpi_helper import rank as mpi_rank, size as mpi_size
 
 class GlobalOptimizer(Optimizer):
     """
@@ -423,7 +422,7 @@ class RandomSamplingOptimizer(GlobalOptimizer):
         # Set the number of points
         if npoints is not None:
             if self.parallel:
-                self.npoints = self.get_optimal_npoints(npoints, world.size)
+                self.npoints = self.get_optimal_npoints(npoints, mpi_size())
             else:
                 self.npoints = int(npoints)
         return self
@@ -497,7 +496,7 @@ class RandomSamplingOptimizer(GlobalOptimizer):
         **kwargs,
     ):
         "Perform the local optimization of the random samples in parallel."
-        rank, size = world.rank, world.size
+        rank, size = mpi_rank(), mpi_size()
         for t, theta in enumerate(thetas):
             if rank == t % size:
                 # Check if the maximum number of iterations is used
@@ -843,7 +842,7 @@ class GridOptimizer(GlobalOptimizer):
     def check_npoints(self, thetas, **kwargs):
         "Check if the number of points is well parallized if it is used."
         if self.parallel:
-            npoints = self.get_optimal_npoints(len(thetas), world.size)
+            npoints = self.get_optimal_npoints(len(thetas), mpi_size())
             return thetas[:npoints]
         return thetas
 
@@ -1127,9 +1126,9 @@ class IterativeLineOptimizer(GridOptimizer):
         "Number of points per dimension if it is parallelized."
         if isinstance(n_each_dim, (list, ndarray)):
             for d, n_dim in enumerate(n_each_dim):
-                n_each_dim[d] = self.get_optimal_npoints(n_dim, world.size)
+                n_each_dim[d] = self.get_optimal_npoints(n_dim, mpi_size())
         else:
-            n_each_dim = self.get_optimal_npoints(n_each_dim, world.size)
+            n_each_dim = self.get_optimal_npoints(n_each_dim, mpi_size())
         return n_each_dim
 
     def get_arguments(self):
@@ -1345,7 +1344,7 @@ class FactorizedOptimizer(GlobalOptimizer):
         # Set the arguments
         if ngrid is not None:
             if self.parallel:
-                self.ngrid = self.get_optimal_npoints(ngrid, world.size)
+                self.ngrid = self.get_optimal_npoints(ngrid, mpi_size())
             else:
                 self.ngrid = int(ngrid)
         if calculate_init is not None:

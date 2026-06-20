@@ -1,8 +1,7 @@
 from numpy import argmin, array, asarray, empty, finfo, inf
 from numpy.random import default_rng, Generator, RandomState
 from scipy.optimize import OptimizeResult
-from ase.parallel import world, broadcast
-
+from catlearn.mpi_helper import rank as mpi_rank, size as mpi_size, bcast
 
 class Optimizer:
     """
@@ -255,12 +254,12 @@ class Optimizer:
         **kwargs,
     ):
         "Get all final solutions from each function at each rank."
-        size = world.size
+        size = mpi_size()
         fun_sol = func.get_stored_solution()
         sol = func.get_solution(sol, parameters, model, X, Y, pdis)
-        fun_sols = [broadcast(fun_sol["fun"], root=r) for r in range(size)]
+        fun_sols = [bcast(fun_sol["fun"], root=r) for r in range(size)]
         rank_min = argmin(fun_sols)
-        return broadcast(sol, root=rank_min)
+        return bcast(sol, root=rank_min)
 
     def get_empty_solution(self, **kwargs):
         "Get an empty solution without any function evaluations."
@@ -319,7 +318,7 @@ class Optimizer:
 
     def calculate_values_parallel(self, thetas, func, func_args=(), **kwargs):
         "Calculate a list of values with a function in parallel."
-        rank, size = world.rank, world.size
+        rank, size = mpi_rank(), mpi_size()
         f_list = asarray(
             [
                 func.function(theta, *func_args)
@@ -329,7 +328,7 @@ class Optimizer:
             dtype=self.dtype,
         )
         return asarray(
-            [broadcast(f_list, root=r) for r in range(size)],
+            [bcast(f_list, root=r) for r in range(size)],
             dtype=self.dtype,
         ).T.reshape(-1)
 
