@@ -1162,6 +1162,7 @@ class ActiveLearning:
         dtrust=None,
         **kwargs,
     ):
+        print("find_next_candidates rank/size", mpi_rank(), mpi_size(), flush=True)
         "Run the method on the ML surrogate surface."
         # Convergence of the method
         method_converged = False
@@ -1439,6 +1440,37 @@ class ActiveLearning:
             self.energy_true = self.candidate.get_potential_energy(
                 force_consistent=self.force_consistent
             )
+ 
+    def finalize_external_evaluation(self, evaluated, is_predicted=False, **kwargs):
+        from numpy import nanmax
+        from numpy.linalg import norm
+        from time import time
+ 
+        self.candidate = evaluated
+        forces = evaluated.get_forces(apply_constraint=self.apply_constraint)
+        self.energy_true = evaluated.get_potential_energy(
+            force_consistent=self.force_consistent
+        )
+ 
+        self.message_system("Single-point calculation finished.")
+        self.eval_time = 0.0
+        self.e_dev = abs(self.energy_true - self.energy_pred)
+        self.true_fmax = nanmax(norm(forces, axis=1))
+        self.steps += 1
+ 
+        if is_predicted:
+            self.save_trajectory(self.pred_evaluated, evaluated, mode=self.mode)
+ 
+        self.add_training([self.candidate])
+        self.save_data()
+ 
+        if self.steps == 1:
+            atoms_ref = self.get_data_atoms()[0]
+            self.e_ref = atoms_ref.get_potential_energy()
+ 
+        self.store_best_data(self.candidate)
+        self.make_summary_table()
+        return self
 
     def update_candidate(self, candidate, dtol=1e-8, **kwargs):
         "Update the evaluated candidate with given candidate."

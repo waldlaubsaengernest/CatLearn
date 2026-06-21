@@ -17,8 +17,7 @@ from numpy import (
 )
 from numpy.linalg import norm
 from scipy.integrate import cumulative_trapezoid
-from ase.parallel import world
-
+from catlearn.mpi_helper import size as mpi_size
 
 class LineSearchOptimizer(LocalOptimizer):
     """
@@ -736,9 +735,9 @@ class FineGridSearch(LineSearchOptimizer):
             self: The updated object itself.
         """
         if self.parallel:
-            self.ngrid = int(int(ngrid / world.size) * world.size)
+            self.ngrid = int(int(ngrid / mpi_size()) * mpi_size())
             if self.ngrid == 0:
-                self.ngrid = world.size
+                self.ngrid = mpi_size()
         else:
             self.ngrid = int(ngrid)
         return self
