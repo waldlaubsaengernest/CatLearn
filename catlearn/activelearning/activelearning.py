@@ -9,6 +9,7 @@ from numpy import (
 )
 from numpy.linalg import norm
 from numpy.random import default_rng, Generator, RandomState
+import numpy as np
 from ase.io import read
 from ase.parallel import world, broadcast
 from ase.io.trajectory import TrajectoryWriter
@@ -1162,8 +1163,6 @@ class ActiveLearning:
         dtrust=None,
         **kwargs,
     ):
-        print("find_next_candidates rank/size", mpi_rank(), mpi_size(), flush=True)
-        "Run the method on the ML surrogate surface."
         # Convergence of the method
         method_converged = False
         # Check if the method is running in parallel
@@ -1415,6 +1414,7 @@ class ActiveLearning:
             candidate, _ = self.ensure_not_in_database(candidate)
 
         self.update_candidate(candidate)
+        self.eval_time = time()
 
         # NEW: write pending evaluation and save full AL/MLNEB state
         if os.environ.get("CATLEARN_WRITE_EVAL_ONLY", "0") == "1":
@@ -1430,9 +1430,10 @@ class ActiveLearning:
                     f"Pending evaluation written to {pending_traj}; state written to {state_pkl}."
                 )
             mpi_comm = mpicomm()
-            mpi_comm.Barrier()
+            if mpi_comm is not None:
+                mpi_comm.Barrier()
+            SystemExit
         else:
-            self.eval_time = time()
             self.message_system("Performing evaluation.", end="\r")
             forces = self.candidate.get_forces(
                 apply_constraint=self.apply_constraint
@@ -1440,20 +1441,44 @@ class ActiveLearning:
             self.energy_true = self.candidate.get_potential_energy(
                 force_consistent=self.force_consistent
             )
+            self.message_system("Single-point calculation finished.")
+            # Store the evaluation time
+            self.eval_time = time() - self.eval_time
+            # Save deviation, fmax, and update steps
+            self.e_dev = abs(self.energy_true - self.energy_pred)
+            self.true_fmax = nanmax(norm(forces, axis=1))
+            self.steps += 1
+            # Store the data
+            if is_predicted:
+                # Store the candidate with predicted properties
+                self.save_trajectory(
+                    self.pred_evaluated,
+                    candidate,
+                    mode=self.mode,
+                )
+            self.add_training([self.candidate])
+            self.save_data()
+            # Make a reference energy
+            if self.steps == 1:
+                atoms_ref = self.get_data_atoms()[0]
+                self.e_ref = atoms_ref.get_potential_energy()
+            # Store the best evaluated candidate
+            self.store_best_data(self.candidate)
+            # Make the summary table
+            self.make_summary_table()
+            return
+
  
     def finalize_external_evaluation(self, evaluated, is_predicted=False, **kwargs):
         from numpy import nanmax
         from numpy.linalg import norm
         from time import time
- 
+
         self.candidate = evaluated
-        forces = evaluated.get_forces(apply_constraint=self.apply_constraint)
-        self.energy_true = evaluated.get_potential_energy(
-            force_consistent=self.force_consistent
-        )
- 
+        forces           = evaluated.get_forces(apply_constraint=self.apply_constraint)
+        self.energy_true = evaluated.get_potential_energy(force_consistent=self.force_consistent)
         self.message_system("Single-point calculation finished.")
-        self.eval_time = 0.0
+        self.eval_time = time() - self.eval_time  
         self.e_dev = abs(self.energy_true - self.energy_pred)
         self.true_fmax = nanmax(norm(forces, axis=1))
         self.steps += 1
@@ -1470,7 +1495,7 @@ class ActiveLearning:
  
         self.store_best_data(self.candidate)
         self.make_summary_table()
-        return self
+        return
 
     def update_candidate(self, candidate, dtol=1e-8, **kwargs):
         "Update the evaluated candidate with given candidate."
@@ -1698,6 +1723,9 @@ class ActiveLearning:
             # Check if the minimum number of trained data points is reached
             if self.get_training_set_size() - 1 < self.min_data:
                 converged = False
+            # Set required attributes
+            for attr in ["true_fmax","energy_true","e_dev","unc"]:
+                if not hasattr(self,attr): setattr(self,attr,np.inf)
             # Check the force criterion is met if it is requested
             if self.use_fmax_convergence and self.true_fmax > fmax:
                 converged = False
