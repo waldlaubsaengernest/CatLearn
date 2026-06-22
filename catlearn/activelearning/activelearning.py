@@ -1473,10 +1473,25 @@ class ActiveLearning:
         from numpy import nanmax
         from numpy.linalg import norm
         from time import time
+        from ase.calculators.singlepoint import SinglePointCalculator
 
-        self.candidate = evaluated
-        forces           = evaluated.get_forces(apply_constraint=self.apply_constraint)
-        self.energy_true = evaluated.get_potential_energy(force_consistent=self.force_consistent)
+        self.update_candidate(evaluated)
+
+        energy = evaluated.get_potential_energy(force_consistent=self.force_consistent)
+        forces = evaluated.get_forces(apply_constraint=self.apply_constraint)
+
+        results = {"energy": energy,"forces": forces}
+
+        # optional, falls vorhanden:
+        if evaluated.calc is not None and hasattr(evaluated.calc, "results"):
+            for key in ["free_energy", "stress", "dipole", "magmom", "magmoms"]:
+                if key in evaluated.calc.results:
+                    results[key] = evaluated.calc.results[key]
+
+        self.candidate.calc = SinglePointCalculator(self.candidate,**results)
+
+        forces = self.candidate.get_forces(apply_constraint=self.apply_constraint)
+        self.energy_true = self.candidate.get_potential_energy(force_consistent=self.force_consistent)
         self.message_system("Single-point calculation finished.")
         self.eval_time = time() - self.eval_time  
         self.e_dev = abs(self.energy_true - self.energy_pred)
