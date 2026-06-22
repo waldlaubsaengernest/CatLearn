@@ -10,28 +10,23 @@ At last, a random sampling of adsorbate positions, combined with local relaxatio
 
 CalLearn uses ASE to handle atomic systems and the calculator interface to calculate the potential energy.
 
+This fork supplies a new infrastructure for using VASP and other DFT code which is not python based.
+
 ## Installation
 
 You can install CatLearn by downloading it from GitHub as:
 ```shell
-git clone https://github.com/avishart/CatLearn
-pip install -e CatLearn/.
+git clone https://github.com/waldlaubsaengernest/CatLearn
+python -m venv .venv
+pip install -e .
 ```
 
-You can also install CatLearn directly from GitHub:
-```shell
-pip install git+https://github.com/avishart/CatLearn.git
-```
-
-However, it is recommended to install a specific tag to ensure it is a stable version:
-```shell
-pip install git+https://github.com/avishart/CatLearn.git@v.x.x.x
-```
-
-The dependency of ASE has only been thoroughly tested up to version 3.26.0.
+The dependency of ASE has only been thoroughly tested up to version 3.26.0, newer versions will unfortunatelly cause bugs.
 
 ## Usage
-The active learning class is generalized to work for any defined optimizer method for ASE `Atoms` structures. The optimization method is executed iteratively with a machine-learning calculator that is retrained for each iteration. The active learning converges when the uncertainty is low (`unc_convergence`) and the energy change is within `unc_convergence` or the maximum force is within the tolerance value set.
+The active learning class is generalized to work for any defined optimizer method for ASE `Atoms` structures. However, the old infrastructure will make the superuser kill your jobs if you use VASP and not GPAW.
+Therefore this forks introduce a completely new workflow.
+The optimization method is executed iteratively with a machine-learning calculator that is retrained for each iteration. The active learning converges when the uncertainty is low (`unc_convergence`) and the energy change is within `unc_convergence` or the maximum force is within the tolerance value set.
 
 Predefined active learning methods are created: `LocalAL`, `MLNEB`, `AdsorptionAL`, `MLGO`, and `RandomAdsorptionAL`.
 
