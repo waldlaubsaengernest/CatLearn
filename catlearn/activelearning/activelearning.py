@@ -1432,7 +1432,7 @@ class ActiveLearning:
             mpi_comm = mpicomm()
             if mpi_comm is not None:
                 mpi_comm.Barrier()
-            SystemExit
+            raise SystemExit
         else:
             self.message_system("Performing evaluation.", end="\r")
             forces = self.candidate.get_forces(
@@ -1495,6 +1495,7 @@ class ActiveLearning:
  
         self.store_best_data(self.candidate)
         self.make_summary_table()
+        self.mode = "a"
         return
 
     def update_candidate(self, candidate, dtol=1e-8, **kwargs):
