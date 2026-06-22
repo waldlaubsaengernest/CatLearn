@@ -25,6 +25,8 @@ The dependency of ASE has only been thoroughly tested up to version 3.26.0, newe
 
 ## Active Learning Class for any Calculator
 The active learning class is generalized to work for any calculator for ASE `Atoms` structures. However, the old infrastructure will make the superuser kill your jobs if you use VASP and not GPAW.
+The new workflow has mainly been tested for VASP, but should work for other calculators as well. GPAW users can still use the original workflow using this fork.
+Also the new workflow has been implemented for MLNEB only and will not work for MLGO and AdsorptionAL, that would require additional coding.
 
 ## New External Workflow
 
