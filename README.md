@@ -23,11 +23,10 @@ pip install -e .
 
 The dependency of ASE has only been thoroughly tested up to version 3.26.0, newer versions will unfortunatelly cause bugs.
 
-## Usage
-The active learning class is generalized to work for any defined optimizer method for ASE `Atoms` structures. However, the old infrastructure will make the superuser kill your jobs if you use VASP and not GPAW.
-Therefore this forks introduce a completely new workflow.
+## Active Learning Class for any Calculator
+The active learning class is generalized to work for any calculator for ASE `Atoms` structures. However, the old infrastructure will make the superuser kill your jobs if you use VASP and not GPAW.
 
-## External Workflow
+## New External Workflow
 
 This fork provides an alternative workflow for electronic structure codes that
 cannot be called directly from Python, such as VASP.
