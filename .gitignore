@@ -8,4 +8,5 @@ build
 .idea/
 .ipynb_checkpoints/
 catlearn.egg-info
+.venv
 vec_store.sqlite
