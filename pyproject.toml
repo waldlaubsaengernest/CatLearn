@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "catlearn"
+version = "0.1.0"
+description = "CatLearn with external MLNEB workflow support"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "dill",
+    "mpi4py",
+    "ase<3.27",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["catlearn*"]
+
+[project.scripts]
+mlneb-run          = "catlearn.scripts.run_mlneb_core:main"
+mlneb-workflow     = "catlearn.scripts.mlneb_workflow_unified:main"
+mlneb-extra-worker = "catlearn.scripts.extra_worker_unified:main"
