@@ -40,21 +40,9 @@ The workflow separates:
 This allows CatLearn to be used efficiently on HPC systems without keeping
 large MPI Python jobs running on one node between the electronic structure calculations.
 
-### Local debugging
-
-The workflow can be tested locally using a machine-learning calculator such as
-MACE:
-
-```shell
-python run_local_mace.py
-```
-
-This executes the full active-learning workflow without MPI and without VASP.
-
 ### Cluster execution
 
-For production calculations the workflow is typically launched through a SLURM
-job script:
+The workflow is typically launched through a SLURM job script:
 
 ```shell
 sbatch run_mlneb.sh
@@ -88,6 +76,17 @@ skripts/
 
 The files in `skripts/` provide the external active-learning workflow for
 calculators such as VASP.
+
+### Local debugging
+
+The workflow can be tested locally using a machine-learning calculator such as
+MACE:
+
+```shell
+python run_local_mace.py
+```
+
+This executes the full active-learning workflow without MPI and without VASP.
 
 ### Machine Learning Calculator
 
