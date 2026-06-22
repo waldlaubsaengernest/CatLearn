@@ -319,7 +319,8 @@ class Optimizer:
     def calculate_values_parallel(self, thetas, func, func_args=(), **kwargs):
         "Calculate a list of values with a function in parallel."
         rank, size = mpi_rank(), mpi_size()
-        f_list = asarray(
+ 
+        local_values = asarray(
             [
                 func.function(theta, *func_args)
                 for t, theta in enumerate(thetas)
@@ -327,10 +328,16 @@ class Optimizer:
             ],
             dtype=self.dtype,
         )
-        return asarray(
-            [bcast(f_list, root=r) for r in range(size)],
-            dtype=self.dtype,
-        ).T.reshape(-1)
+ 
+        chunks = [bcast(local_values, root=r) for r in range(size)]
+ 
+        values = []
+        for t in range(len(thetas)):
+            r = t % size
+            local_index = t // size
+            values.append(chunks[r][local_index])
+ 
+        return asarray(values, dtype=self.dtype)
 
     def compare_solutions(self, sol1, sol2, **kwargs):
         """
