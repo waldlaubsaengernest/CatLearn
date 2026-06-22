@@ -38,7 +38,7 @@ The workflow separates:
 3. Updating the active learning state.
 
 This allows CatLearn to be used efficiently on HPC systems without keeping
-large MPI Python jobs running during electronic structure calculations.
+large MPI Python jobs running on one node between the electronic structure calculations.
 
 ### Local debugging
 
