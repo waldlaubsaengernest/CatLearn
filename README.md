@@ -51,8 +51,8 @@ A typical example is:
 
 #!/bin/bash
 #SBATCH --job-name=mlneb
-#SBATCH --nodes=4
-#SBATCH --ntasks-per-node=40
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=96
 #SBATCH --time=24:00:00
 
 module purge
