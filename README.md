@@ -81,7 +81,7 @@ a custom directory can be supplied:
 run_mlneb_core.sh /path/to/workdir
 ```
 
-The following functions are required (see examples below):
+The following functions are required to write in your user_settings.py (see examples below):
 ```python
 
 from ase.io import read
