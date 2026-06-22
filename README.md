@@ -40,22 +40,84 @@ The workflow separates:
 This allows CatLearn to be used efficiently on HPC systems without keeping
 large MPI Python jobs running on one node between the electronic structure calculations.
 
-### Cluster execution
+### Getting started
+User Workflow
 
-The workflow is typically launched through a SLURM job script:
+The external workflow is controlled through a user supplied SLURM script.
 
+A typical example is:
 ```shell
-sbatch run_mlneb.sh
+
+#!/bin/bash
+#SBATCH --job-name=mlneb
+#SBATCH --nodes=4
+#SBATCH --ntasks-per-node=40
+#SBATCH --time=24:00:00
+
+module purge
+module load ...
+
+source /path/to/CatLearn/.venv/bin/activate
+
+export CATLEARN_USER_MODULE=$PWD/user_settings.py
+
+export EVAL_BACKEND=vasp
+export N_IMAGES=18
+export FMAX=0.05
+export MAX_UNC=0.05
+export ML_STEPS=500
+export AL_STEPS=100
+
+run_mlneb_core.sh
 ```
 
-The user is responsible for:
+The workflow directory defaults to the current working directory. Alternatively,
+a custom directory can be supplied:
+```shell
+run_mlneb_core.sh /path/to/workdir
+```
 
-- loading modules,
-- setting environment variables,
-- defining the ASE calculator,
-- defining magnetic moments if required.
+The following functions are required (see examples below):
+```python
 
-The workflow itself is independent of the underlying calculator.
+from ase.io import read
+from ase.calculators.vasp import Vasp
+
+def get_calculator():
+    calc = Vasp(...)
+    return calc
+def get_endpoints():
+    initial = read("initial.traj")
+    final = read("final.traj")
+    return initial, final
+```
+The calculator function may optionally accept the arguments magmom and
+workdir:
+```python
+def get_calculator(magmom):
+    ...
+
+def get_calculator(workdir):
+    ...
+
+def get_calculator(magmom, workdir):
+    ...
+ ```  
+Optional Functions
+
+Magnetic moments can be initialized through:
+
+ ```  python
+def get_magmom():
+    return [...]
+  ```  
+
+The initial and final structures can optionally be evaluated before the MLNEB
+run, by adding the follow function:
+ ```  python
+def ensure_endpoint_results(calc, workdir):
+    ...
+  ```  
 
 ## Repository Structure
 
