@@ -7,5 +7,5 @@ docs/_*
 build
 .idea/
 .ipynb_checkpoints/
-
+catlearn.egg-info
 vec_store.sqlite
