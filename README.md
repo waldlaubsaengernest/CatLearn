@@ -26,6 +26,72 @@ The dependency of ASE has only been thoroughly tested up to version 3.26.0, newe
 ## Usage
 The active learning class is generalized to work for any defined optimizer method for ASE `Atoms` structures. However, the old infrastructure will make the superuser kill your jobs if you use VASP and not GPAW.
 Therefore this forks introduce a completely new workflow.
+
+## External Workflow
+
+This fork provides an alternative workflow for electronic structure codes that
+cannot be called directly from Python, such as VASP.
+
+The workflow separates:
+
+1. Candidate generation.
+2. External structure evaluation.
+3. Updating the active learning state.
+
+This allows CatLearn to be used efficiently on HPC systems without keeping
+large MPI Python jobs running during electronic structure calculations.
+
+### Local debugging
+
+The workflow can be tested locally using a machine-learning calculator such as
+MACE:
+
+```shell
+python run_local_mace.py
+```
+
+This executes the full active-learning workflow without MPI and without VASP.
+
+### Cluster execution
+
+For production calculations the workflow is typically launched through a SLURM
+job script:
+
+```shell
+sbatch run_mlneb.sh
+```
+
+The user is responsible for:
+
+- loading modules,
+- setting environment variables,
+- defining the ASE calculator,
+- defining magnetic moments if required.
+
+The workflow itself is independent of the underlying calculator.
+
+## Repository Structure
+
+```text
+catlearn/
+    activelearning/
+    optimizer/
+    regression/
+    structures/
+    tools/
+
+skripts/
+    extra_worker_unified.py
+    mlneb_workflow_unified.py
+    run_local_mace.py
+    run_mlneb_core.sh
+```
+
+The files in `skripts/` provide the external active-learning workflow for
+calculators such as VASP.
+
+### Machine Learning Calculator
+
 The optimization method is executed iteratively with a machine-learning calculator that is retrained for each iteration. The active learning converges when the uncertainty is low (`unc_convergence`) and the energy change is within `unc_convergence` or the maximum force is within the tolerance value set.
 
 Predefined active learning methods are created: `LocalAL`, `MLNEB`, `AdsorptionAL`, `MLGO`, and `RandomAdsorptionAL`.
