@@ -43,7 +43,6 @@ This allows CatLearn to be used efficiently on HPC systems without keeping
 large MPI Python jobs running on one node between the electronic structure calculations.
 
 ### Getting started
-User Workflow
 
 The external workflow is controlled through a user supplied SLURM script.
 
