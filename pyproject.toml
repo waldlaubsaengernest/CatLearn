@@ -37,7 +37,9 @@ keywords = [
 where = ["."]
 include = ["catlearn*"]
 
+[tool.setuptools]
+script-files = ["catlearn/scripts/run_mlneb_core.sh"]
+
 [project.scripts]
-mlneb-run          = "catlearn.scripts.run_mlneb_core:main"
 mlneb-workflow     = "catlearn.scripts.mlneb_workflow_unified:main"
 mlneb-extra-worker = "catlearn.scripts.extra_worker_unified:main"

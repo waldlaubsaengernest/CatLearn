@@ -1,3 +1,20 @@
+#!/bin/bash
+D0="${1:-${D0:-$PWD}}"
+export D0
+
+EVAL_BACKEND="${EVAL_BACKEND:-vasp}"
+N_IMAGES="${N_IMAGES:-18}"
+FMAX="${FMAX:-0.05}"
+MAX_UNC="${MAX_UNC:-0.05}"
+NEB_INTERPOLATION="${NEB_INTERPOLATION:-idpp}"
+ML_STEPS="${ML_STEPS:-500}"
+AL_STEPS="${AL_STEPS:-100}"
+CLEAN_EVAL_DIR="${CLEAN_EVAL_DIR:-1}"
+
+VASP_COMMAND="${VASP_COMMAND:-srun vasp_std}"
+
+export EVAL_BACKEND N_IMAGES FMAX MAX_UNC NEB_INTERPOLATION ML_STEPS AL_STEPS CLEAN_EVAL_DIR VASP_COMMAND
+
 set -euo pipefail
 set -x
 
@@ -13,7 +30,7 @@ run_vasp_checked () {
     local evaldir="$1"
     cd "$evaldir"
 
-    srun vasp_std
+    $VASP_COMMAND
     local rc=$?
 
     if [ "$rc" -ne 0 ]; then
@@ -51,10 +68,15 @@ for AL_STEP in $(seq 1 "$AL_STEPS"); do
 
     srun mlneb-extra-worker next "$STATE_AFTER" "$PENDING" "$CANDIDATES" "$META"
 
-    NCAND=$(mlneb-workflow count_candidates 2>/dev/null | tail -n 1)
+    NCAND=$(mlneb-workflow count_candidates | tail -n 1)
     echo "AL_STEP=$AL_STEP NCAND=$NCAND"
 
-    if [ -z "$NCAND" ] || [ "$NCAND" -eq 0 ]; then
+    if ! [[ "$NCAND" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: count_candidates did not return an integer: '$NCAND'"
+        exit 92
+    fi
+
+    if [ "$NCAND" -eq 0 ]; then
         echo "No candidates returned; stopping."
         break
     fi

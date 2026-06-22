@@ -15,25 +15,52 @@ import os
 import sys
 import shutil
 from copy import deepcopy
-
 import dill as pickle
 import numpy as np
 from ase.io import read, write
-from ase.calculators.vasp import Vasp
 from ase.calculators.singlepoint import SinglePointCalculator
 from catlearn.activelearning.mlneb import MLNEB
+import importlib.util
 
+def load_user_module():
+    path = os.environ.get("CATLEARN_USER_MODULE")
+    if path is None:
+        return None
+    spec = importlib.util.spec_from_file_location("catlearn_user_module", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
-def set_magmom(atoms):
-    for atom in atoms:
-        if atom.symbol in ["Co", "Fe"]:
-            atom.magmom = 3.0
-        elif atom.symbol == "Ni":
-            atom.magmom = 2.0
-        elif atom.symbol in ["N", "C", "O"]:
-            atom.magmom = 0.0
-    return atoms
+USER_MODULE = load_user_module()
 
+def get_magmom():
+    if USER_MODULE and hasattr(USER_MODULE, "get_magmom"):
+        return USER_MODULE.get_magmom()
+    return None
+
+import inspect
+
+def build_calc(magmom=None, workdir=None):
+    if USER_MODULE and hasattr(USER_MODULE, "get_calculator"):
+        func = USER_MODULE.get_calculator
+
+        kwargs = {}
+        sig = inspect.signature(func)
+
+        if "magmom" in sig.parameters:
+            kwargs["magmom"] = magmom
+
+        if "workdir" in sig.parameters:
+            kwargs["workdir"] = workdir
+
+        return func(**kwargs)
+
+    return None
+
+def get_endpoints():
+    if USER_MODULE and hasattr(USER_MODULE, "get_endpoints"):
+        return USER_MODULE.get_endpoints()
+    return read("initial.traj"), read("final.traj")
 
 def require_env(name):
     value = os.environ.get(name)
@@ -50,12 +77,15 @@ def bool_env(name, default=False):
 
 
 D0 = os.environ.get("D0")
+if D0 is None:
+    raise RuntimeError("D0 is not set. Export D0 or pass it to run_mlneb_core.sh.")
 EVAL_BACKEND = os.environ.get("EVAL_BACKEND", "vasp").lower()  # "vasp" or "mace"
 
 N_IMAGES = int(os.environ.get("N_IMAGES", "18"))
 FMAX = float(os.environ.get("FMAX", "0.05"))
 MAX_UNC = float(os.environ.get("MAX_UNC", "0.05"))
 ML_STEPS = int(os.environ.get("ML_STEPS", "500"))
+NEB_INTERPOLATION = os.environ.get("NEB_INTERPOLATION", "idpp")
 
 STATE_PKL = os.path.join(D0, "catlearn_state.pkl")
 STATE_AFTER_EVAL_PKL = os.path.join(D0, "catlearn_state.pkl")
@@ -69,7 +99,6 @@ CANDIDATE_META_PKL = os.path.join(D0, "candidate_meta.pkl")
 DONE_FILE = os.path.join(D0, "MLNEB_DONE")
 CURRENT_EVAL_DIR_TXT = os.path.join(D0, "current_eval_dir.txt")
 
-
 def dump_atomic(obj, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
@@ -79,17 +108,14 @@ def dump_atomic(obj, path):
         os.fsync(f.fileno())
     os.replace(tmp, path)
 
-
 def load_pickle(path):
     with open(path, "rb") as f:
         return pickle.load(f)
-
 
 def save_state(mlneb):
     dump_atomic(mlneb, STATE_AFTER_EVAL_PKL)
     # Keep the VASP-named file too, so older run.sh continues to work.
     dump_atomic(mlneb, STATE_AFTER_VASP_PKL)
-
 
 def load_state():
     state = os.environ.get("STATE_IN")
@@ -103,114 +129,15 @@ def load_state():
     with open(state, "rb") as f:
         return pickle.load(f)
 
-
-def build_vasp_calc(magmom):
-    return Vasp(
-        directory=D0,
-        xc="PBE",
-        gga="RP",
-        setups="recommended",
-        algo="fast",
-        ediff=1e-5,
-        ediffg=-0.05,
-        encut=450,
-        ibrion=2,
-        icharg=1,
-        idipol=3,
-        isif=1,
-        ismear=1,
-        ispin=2,
-        lcharg=True,
-        ldipol=True,
-        lmaxmix=4,
-        lorbit=11,
-        lreal="Auto",
-        lwave=True,
-        istart=1,
-        nelm=250,
-        nelmin=5,
-        npar=4,
-        nsw=0,
-        sigma=0.05,
-        gamma=True,
-        magmom=magmom,
-        kpts=(2, 2, 1),
-    )
-
-
-def get_mace_calculator():
-    model_path = os.environ.get("MACE_MODEL")
-    device = os.environ.get("MACE_DEVICE", "cpu")
-    default_dtype = os.environ.get("MACE_DTYPE", "float64")
-
-    try:
-        from mace.calculators import mace_mp
-        if model_path:
-            return mace_mp(model=model_path, device=device, default_dtype=default_dtype)
-        return mace_mp(device=device, default_dtype=default_dtype)
-    except Exception as exc:
-        raise RuntimeError(
-            "Could not construct MACE calculator. "
-            "Set MACE_MODEL/MACE_DEVICE/MACE_DTYPE or edit get_mace_calculator()."
-        ) from exc
-
-
-def build_calc(magmom):
-    if EVAL_BACKEND == "mace":
-        return get_mace_calculator()
-    if EVAL_BACKEND == "vasp":
-        return build_vasp_calc(magmom)
-    raise RuntimeError(f"Unknown EVAL_BACKEND={EVAL_BACKEND!r}; use 'vasp' or 'mace'.")
-
-
-def ensure_endpoint_results(calc):
-    """Evaluate initial/final if missing results.
-
-    For local MACE this runs MACE.
-    For VASP this follows your original ASE/VASP endpoint behavior.
-    """
-    for fname in ["initial.traj", "final.traj"]:
-        atoms = read(fname)
-        atoms = set_magmom(atoms)
-        old_calc = atoms.calc
-        com = atoms.get_center_of_mass(scaled=True)
-
-        have_results = (
-            old_calc is not None
-            and hasattr(old_calc, "results")
-            and "energy" in old_calc.results
-            and "forces" in old_calc.results
-        )
-
-        if not have_results:
-            atoms.calc = deepcopy(calc)
-
-            if EVAL_BACKEND == "vasp":
-                nr = 0
-                if fname == "final.traj":
-                    nr = N_IMAGES + 1
-                dname = os.path.join(D0, f"image_{nr}")
-                os.makedirs(dname, exist_ok=True)
-                atoms.calc.directory = dname
-                atoms.calc.dipol = (com[0], com[1], com[2])
-
-            energy = atoms.get_potential_energy()
-            forces = atoms.get_forces()
-            atoms.calc = SinglePointCalculator(atoms, energy=energy, forces=forces)
-            atoms.write(fname)
-
-
 def build_mlneb_and_calc():
     os.makedirs(D0, exist_ok=True)
-
-    initial0 = set_magmom(read("initial.traj"))
-    magmom = [atom.magmom for atom in initial0]
-
-    calc = build_calc(magmom)
-    ensure_endpoint_results(calc)
-
-    initial = read("initial.traj")
-    final = read("final.traj")
+    initial,final = get_endpoints()
+    magmom        =  get_magmom()
+    calc          = build_calc(magmom,D0)
+    if calc is None:
+        raise RuntimeError("No calculator returned. Define get_calculator() in CATLEARN_USER_MODULE.")
+    if USER_MODULE and hasattr(USER_MODULE, "ensure_endpoint_results"): 
+        USER_MODULE.ensure_endpoint_results(calc,D0)
 
     mlneb_calc = deepcopy(calc)
     if EVAL_BACKEND == "vasp":
@@ -220,7 +147,7 @@ def build_mlneb_and_calc():
         start=initial,
         end=final,
         ase_calc=mlneb_calc,
-        neb_interpolation="idpp",
+        neb_interpolation=NEB_INTERPOLATION,
         n_images=N_IMAGES + 2,
         climb=True,
         start_without_ci=True,
@@ -243,12 +170,7 @@ def phase_prepare_state():
     dump_atomic(calc, CALC_PKL)
 
 def phase_count_candidates():
-    print("D0 =", D0)
-    print("CANDIDATES_PKL =", CANDIDATES_PKL)
-
     payload = load_pickle(CANDIDATES_PKL)
-
-    print("payload =", type(payload))
     print(len(payload))
 
 def get_eval_dir(candidate_index):
@@ -282,8 +204,6 @@ def phase_write_eval_input():
     eval_dir = get_eval_dir(candidate_index)
     clean_eval_dir(eval_dir)
 
-    atoms = set_magmom(atoms)
-
     if EVAL_BACKEND == "vasp":
         calc = load_pickle(CALC_PKL)
         atoms.calc = deepcopy(calc)
@@ -301,7 +221,6 @@ def phase_write_eval_input():
 # Backward-compatible phase name.
 phase_write_vasp_input = phase_write_eval_input
 
-
 def phase_run_mace_eval():
     if EVAL_BACKEND != "mace":
         raise RuntimeError("run_mace_eval phase requires EVAL_BACKEND=mace")
@@ -311,7 +230,6 @@ def phase_run_mace_eval():
         eval_dir = f.read().strip()
 
     atoms = read(os.path.join(eval_dir, "input_atoms.traj"))
-    atoms = set_magmom(atoms)
     atoms.calc = deepcopy(calc)
 
     energy = atoms.get_potential_energy()
@@ -419,3 +337,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
