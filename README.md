@@ -110,7 +110,7 @@ mlneb = MLNEB(
 
 The other option is to create a user_settings.py instead of the input.py which includes your calculator or additional functions needed (see below).
 For this you need to add
-```
+```shell
 export CATLEARN_USER_MODULE=$PWD/user_settings.py
 export N_IMAGES=18
 ```
