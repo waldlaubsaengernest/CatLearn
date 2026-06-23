@@ -114,8 +114,7 @@ For this you need to add
 export CATLEARN_USER_MODULE=$PWD/user_settings.py
 export N_IMAGES=18
 ```
-This auto-generates the MLNEB for 18 images. If you wish no auto generation of the neb but custom functions, define the calculator and your MLNEB in the input.py
-only only add the other functions needed.
+This auto-generates the MLNEB for 18 images. If you wish no auto generation of the neb but custom functions, define the calculator and your MLNEB in the input.py and only add the other functions needed.
 
 ```python
 
