@@ -64,25 +64,59 @@ module load ...
 
 source /path/to/CatLearn/.venv/bin/activate
 
-export CATLEARN_USER_MODULE=$PWD/user_settings.py
-
-export EVAL_BACKEND=vasp
-export N_IMAGES=18
-export FMAX=0.05
-export MAX_UNC=0.05
-export ML_STEPS=500
-export AL_STEPS=100
+export INPUT=input.py
 
 run_mlneb_core.sh
 ```
+You can set up a file input.py in your working directory (see example).
+```python
+from ase.io import read
+from ase.calculators.vasp import Vasp
+from ase.optimize import FIRE
+from catlearn.activelearning.mlneb import MLNEB
 
-The workflow directory defaults to the current working directory. Alternatively,
-a custom directory can be supplied:
-```shell
-run_mlneb_core.sh /path/to/workdir
+initial = read('OUTCAR_initial')
+final= read('OUTCAR_final')
+
+# Get center of mass
+com = initial.get_center_of_mass(scaled=True)
+calc = Vasp()
+mlneb = MLNEB(
+        start=initial,
+        end=final,
+        ase_calc=calc,
+        unc_convergence=0.05,
+        n_images=16,
+        climb=True,
+        neb_method="improvedtangentneb",
+        neb_kwargs={},
+        neb_interpolation="linear",
+        start_without_ci=True,
+        reuse_ci_path=True,
+        save_memory=False,
+        local_opt=FIRE,
+        local_opt_kwargs={},
+        check_unc=True,
+        use_restart=True,
+        min_data=3,
+        restart=False,
+        verbose=True,
+        last_traj='last_path.traj',
+        parallel_run=True,
+        parallel_eval=False,
+    )
 ```
 
-The following functions are required to write in your user_settings.py (see examples below):
+
+The other option is to create a user_settings.py instead of the input.py which includes your calculator or additional functions needed (see below).
+For this you need to add
+```
+export CATLEARN_USER_MODULE=$PWD/user_settings.py
+export N_IMAGES=18
+```
+This auto-generates the MLNEB for 18 images. If you wish no auto generation of the neb but custom functions, define the calculator and your MLNEB in the input.py
+only only add the other functions needed.
+
 ```python
 
 from ase.io import read
@@ -95,34 +129,25 @@ def get_endpoints():
     initial = read("initial.traj")
     final = read("final.traj")
     return initial, final
-```
-The calculator function may optionally accept the arguments magmom and
-workdir:
-```python
-def get_calculator(magmom):
-    ...
 
-def get_calculator(workdir):
-    ...
-
-def get_calculator(magmom, workdir):
-    ...
- ```  
-Optional Functions
-
-Magnetic moments can be initialized through:
-
- ```  python
 def get_magmom():
     return [...]
-  ```  
-
-The initial and final structures can optionally be evaluated before the MLNEB
-run, by adding the follow function:
- ```  python
+    
 def ensure_endpoint_results(calc, workdir):
     ...
   ```  
+## Controlling Convergence Parameters
+You can set custom convergence criteria in your run.sh, if you want to use other than the default:
+```shell
+export FMAX=0.05
+export MAX_UNC=0.05
+export ML_STEPS=500
+export AL_STEPS=100
+```
+The calculation backend is vasp by default, meaning that the VASP-specific workflow is used, which should also be use for other non-python DFT code.
+```shell
+export EVAL_BACKEND=vasp
+```
 
 ## Repository Structure
 
