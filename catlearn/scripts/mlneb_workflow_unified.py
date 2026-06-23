@@ -138,6 +138,7 @@ def build_mlneb_and_calc():
         raise RuntimeError("No calculator returned. Define get_calculator() in CATLEARN_USER_MODULE.")
     if USER_MODULE and hasattr(USER_MODULE, "ensure_endpoint_results"): 
         USER_MODULE.ensure_endpoint_results(calc,D0)
+        initial,final = get_endpoints()
 
     mlneb_calc = deepcopy(calc)
     if EVAL_BACKEND == "vasp":
