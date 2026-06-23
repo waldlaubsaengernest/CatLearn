@@ -209,9 +209,10 @@ def phase_write_eval_input():
         calc = load_pickle(CALC_PKL)
         atoms.calc = deepcopy(calc)
         atoms.calc.directory = eval_dir
-        com = atoms.get_center_of_mass(scaled=True)
-        atoms.calc.dipol = (com[0], com[1], com[2])
-        atoms.calc.write_input(atoms)
+        if USER_MODULE and hasattr(USER_MODULE, "update_dipol"):
+            atoms.calc = USER_MODULE.update_dipol(atoms, atoms.calc)
+
+    atoms.calc.write_input(atoms)
 
     # In both modes keep an explicit input structure.
     write(os.path.join(eval_dir, "input_atoms.traj"), atoms)
