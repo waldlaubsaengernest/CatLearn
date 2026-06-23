@@ -44,7 +44,7 @@ large MPI Python jobs running on one node between the electronic structure calcu
 
 ### Getting started
 
-The external workflow is controlled through a user supplied SLURM script, which is submitted to the server using 
+The external workflow is controlled through a user supplied SLURM script, which is submitted (inside the venv) to the server using 
 ```shell
 sbatch run.sh
 ```
