@@ -68,7 +68,7 @@ export INPUT=input.py
 
 run_mlneb_core.sh
 ```
-You can set up a file input.py in your working directory (see example).
+You can set up a file input.py in your working directory (see example). It is important to set parallel_run=True and parallel_eval=False for VASP.
 ```python
 from ase.io import read
 from ase.calculators.vasp import Vasp
