@@ -298,10 +298,21 @@ def phase_load_eval():
 # Backward-compatible phase name.
 phase_load_vasp_eval = phase_load_eval
 
-
 def phase_check_convergence():
     mlneb = load_state()
-    converged = bool(mlneb.converged())
+
+    fmax = float(os.environ.get("FMAX", "0.05"))
+
+    method_converged = False
+    if os.path.exists(CANDIDATE_META_PKL):
+        meta = load_pickle(CANDIDATE_META_PKL)
+        method_converged = bool(meta.get("method_converged", False))
+
+    converged = bool(mlneb.check_convergence(
+        fmax,
+        method_converged,
+    ))
+
     if converged:
         with open(DONE_FILE, "w") as f:
             f.write("converged\n")
