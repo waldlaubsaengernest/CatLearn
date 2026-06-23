@@ -22,8 +22,9 @@ from ase.calculators.singlepoint import SinglePointCalculator
 from catlearn.activelearning.mlneb import MLNEB
 import importlib.util
 
-def load_user_module():
-    path = os.environ.get("CATLEARN_USER_MODULE")
+def load_user_module(path=None):
+    if path is None:
+        path = os.environ.get("CATLEARN_USER_MODULE")
     if path is None:
         return None
     spec = importlib.util.spec_from_file_location("catlearn_user_module", path)
@@ -31,6 +32,7 @@ def load_user_module():
     spec.loader.exec_module(mod)
     return mod
 
+INPUT_FILE = os.environ.get("INPUT")
 USER_MODULE = load_user_module()
 
 def get_magmom():
@@ -164,9 +166,14 @@ def build_mlneb_and_calc():
     )
     return mlneb, calc
 
-
 def phase_prepare_state():
-    mlneb, calc = build_mlneb_and_calc()
+    if INPUT_FILE:
+        inp = load_user_module(INPUT_FILE)
+        calc = inp.calc
+        mlneb = inp.mlneb
+    else:
+        mlneb, calc = build_mlneb_and_calc()
+
     dump_atomic(mlneb, STATE_PKL)
     dump_atomic(calc, CALC_PKL)
 
@@ -209,10 +216,11 @@ def phase_write_eval_input():
         calc = load_pickle(CALC_PKL)
         atoms.calc = deepcopy(calc)
         atoms.calc.directory = eval_dir
+        
         if USER_MODULE and hasattr(USER_MODULE, "update_dipol"):
             atoms.calc = USER_MODULE.update_dipol(atoms, atoms.calc)
 
-    atoms.calc.write_input(atoms)
+        atoms.calc.write_input(atoms)
 
     # In both modes keep an explicit input structure.
     write(os.path.join(eval_dir, "input_atoms.traj"), atoms)

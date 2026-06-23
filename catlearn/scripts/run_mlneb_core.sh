@@ -1,6 +1,10 @@
 #!/bin/bash
-D0="${1:-${D0:-$PWD}}"
-export D0
+
+INPUT="${1:-${INPUT:-}}"
+D0="${D0:-$PWD}"
+
+export INPUT D0
+echo D0
 
 EVAL_BACKEND="${EVAL_BACKEND:-vasp}"
 N_IMAGES="${N_IMAGES:-18}"
