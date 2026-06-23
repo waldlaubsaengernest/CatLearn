@@ -18,6 +18,7 @@ You can install CatLearn by downloading it from GitHub as:
 ```shell
 git clone https://github.com/waldlaubsaengernest/CatLearn
 python -m venv .venv
+source .venv/bin/activate
 pip install -e .
 ```
 
