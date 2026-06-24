@@ -60,7 +60,6 @@ EVALDIR=$(cat "$D0/current_eval_dir.txt")
 run_vasp_checked "$EVALDIR"
 
 mlneb-workflow load_vasp_eval
-mlneb-workflow check_convergence || true
 
 for AL_STEP in $(seq 1 "$AL_STEPS"); do
     if [ -f "$D0/MLNEB_DONE" ]; then
