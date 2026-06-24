@@ -248,8 +248,131 @@ def phase_run_mace_eval():
     atoms.calc = SinglePointCalculator(atoms, energy=energy, forces=forces)
     write(os.path.join(eval_dir, "evaluated.traj"), atoms)
 
+def read_ase_sort_file(eval_dir):
+    path = os.path.join(eval_dir, "ase-sort.dat")
+
+    if not os.path.exists(path):
+        return None, None
+
+    sort = []
+    resort = []
+
+    with open(path) as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            sort.append(int(parts[0]))
+            resort.append(int(parts[1]))
+
+    return np.asarray(sort, dtype=int), np.asarray(resort, dtype=int)
+
+
+def reorder_vasp_result_to_catlearn_order(eval_dir, atoms):
+    """
+    VASP/ASE may sort atoms by element when writing POSCAR.
+
+    CatLearn needs the original atom-index order.  This function converts the
+    Atoms object read from OUTCAR/vasprun.xml back to the order stored in
+    input_atoms.traj.
+
+    Positions, symbols and forces are transformed together.
+    """
+
+    input_atoms_path = os.path.join(eval_dir, "input_atoms.traj")
+
+    if not os.path.exists(input_atoms_path):
+        print(
+            f"[VASP-REORDER] no input_atoms.traj in {eval_dir}; "
+            "leaving result unchanged",
+            flush=True,
+        )
+        return atoms
+
+    ref = read(input_atoms_path)
+
+    if len(ref) != len(atoms):
+        raise RuntimeError(
+            f"[VASP-REORDER] atom count mismatch in {eval_dir}: "
+            f"input_atoms={len(ref)} result={len(atoms)}"
+        )
+
+    ref_numbers = np.asarray(ref.get_atomic_numbers())
+    result_numbers = np.asarray(atoms.get_atomic_numbers())
+
+    sort, resort = read_ase_sort_file(eval_dir)
+
+    # Case 1: result already has CatLearn order.
+    if np.array_equal(result_numbers, ref_numbers):
+        print(
+            "[VASP-REORDER] result already in CatLearn atom order",
+            flush=True,
+        )
+        return atoms
+
+    if sort is None or resort is None:
+        raise RuntimeError(
+            f"[VASP-REORDER] atom order changed but ase-sort.dat missing "
+            f"in {eval_dir}"
+        )
+
+    if len(resort) != len(atoms):
+        raise RuntimeError(
+            f"[VASP-REORDER] ase-sort.dat length mismatch in {eval_dir}: "
+            f"{len(resort)} entries for {len(atoms)} atoms"
+        )
+
+    # Usually this is the correct inverse map:
+    # sorted_result[resort] -> original CatLearn order.
+    if np.array_equal(result_numbers[resort], ref_numbers):
+        index = resort
+        map_name = "resort"
+    elif np.array_equal(result_numbers[sort], ref_numbers):
+        index = sort
+        map_name = "sort"
+    else:
+        bad = np.where(result_numbers != ref_numbers)[0][:20]
+        msg = "\n".join(
+            f"{i}: ref={ref[i].symbol} result={atoms[i].symbol}"
+            for i in bad
+        )
+        raise RuntimeError(
+            "[VASP-REORDER] cannot map VASP result back to CatLearn order.\n"
+            f"First direct mismatches:\n{msg}"
+        )
+
+    energy = atoms.get_potential_energy()
+    forces = atoms.get_forces()
+
+    reordered = ref.copy()
+    reordered.set_positions(atoms.get_positions()[index])
+    reordered.set_cell(atoms.get_cell())
+    reordered.set_pbc(atoms.get_pbc())
+
+    # Keep CatLearn symbols/order explicitly.
+    reordered.set_atomic_numbers(ref.get_atomic_numbers())
+
+    # Preserve useful metadata from CatLearn-side input.
+    reordered.set_constraint(ref.constraints)
+    reordered.set_tags(ref.get_tags())
+
+    reordered.calc = SinglePointCalculator(
+        reordered,
+        energy=float(energy),
+        forces=np.asarray(forces)[index],
+    )
+
+    print(
+        f"[VASP-REORDER] transformed VASP result to CatLearn order using {map_name}",
+        flush=True,
+    )
+
+    write(os.path.join(eval_dir, "evaluated_reordered_debug.traj"), reordered)
+
+    return reordered
+
 def read_evaluated_atoms(eval_dir):
-    if EVAL_BACKEND == "mace":
+    if EVAL_BACKEND in ("mace", "traj", "replay"):
         path = os.path.join(eval_dir, "evaluated.traj")
         if not os.path.exists(path):
             raise FileNotFoundError(path)
@@ -257,11 +380,21 @@ def read_evaluated_atoms(eval_dir):
 
     vasprun = os.path.join(eval_dir, "vasprun.xml")
     outcar = os.path.join(eval_dir, "OUTCAR")
+
     if os.path.exists(vasprun):
-        return read(vasprun)
-    if os.path.exists(outcar):
-        return read(outcar)
-    raise FileNotFoundError(f"Neither vasprun.xml nor OUTCAR found in {eval_dir}")
+        atoms = read(vasprun, index=-1)
+    elif os.path.exists(outcar):
+        atoms = read(outcar, index=-1)
+    else:
+        raise FileNotFoundError(
+            f"Neither vasprun.xml nor OUTCAR found in {eval_dir}"
+        )
+
+    atoms = reorder_vasp_result_to_catlearn_order(eval_dir, atoms)
+
+    write(os.path.join(eval_dir, "evaluated.traj"), atoms)
+
+    return atoms
 
 
 def apply_prediction_payload(mlneb):

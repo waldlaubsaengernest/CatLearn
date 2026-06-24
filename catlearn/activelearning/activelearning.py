@@ -1524,7 +1524,6 @@ class ActiveLearning:
         # Update the evaluated candidate with given candidate
         # Set positions
         self.candidate.set_positions(candidate.get_positions())
-        self.candidate.set_chemical_symbols(candidate.get_chemical_symbols())
         # Set cell
         cell_old = self.candidate.get_cell()
         cell_new = candidate.get_cell()
