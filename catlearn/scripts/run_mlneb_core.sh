@@ -50,16 +50,22 @@ run_vasp_checked () {
     cd -
 }
 
-mlneb-workflow prepare_state
+PREPARE_OUTPUT="$(mlneb-workflow prepare_state)"
+echo "$PREPARE_OUTPUT"
+eval "$(printf '%s\n' "$PREPARE_OUTPUT" | tail -n 1)"
 
-srun mlneb-extra-worker initial "$STATE0" "$PENDING" "$CANDIDATES" "$META"
+if [ "${RESTART:-0}" != "1" ]; then
+    srun mlneb-extra-worker initial "$STATE0" "$PENDING" "$CANDIDATES" "$META"
 
-unset CANDIDATE_INDEX
-mlneb-workflow write_vasp_input
-EVALDIR=$(cat "$D0/current_eval_dir.txt")
-run_vasp_checked "$EVALDIR"
+    unset CANDIDATE_INDEX
+    mlneb-workflow write_vasp_input
+    EVALDIR=$(cat "$D0/current_eval_dir.txt")
+    run_vasp_checked "$EVALDIR"
 
-mlneb-workflow load_vasp_eval
+    mlneb-workflow load_vasp_eval
+else
+    echo "RESTART=1; skipping initial evaluation and entering AL loop."
+fi
 
 for AL_STEP in $(seq 1 "$AL_STEPS"); do
     if [ -f "$D0/MLNEB_DONE" ]; then

@@ -174,8 +174,17 @@ def phase_prepare_state():
     else:
         mlneb, calc = build_mlneb_and_calc()
 
+    restart_mode = bool(getattr(mlneb, "restart", False)) or bool_env("RESTART", False)
+
+    if restart_mode and hasattr(mlneb, "restart"):
+        mlneb.restart = True
+
     dump_atomic(mlneb, STATE_PKL)
     dump_atomic(calc, CALC_PKL)
+
+    # A subprocess cannot modify the parent shell environment directly.
+    # The run script reads this last line with eval.
+    print("export RESTART=1" if restart_mode else "export RESTART=0")
 
 def phase_count_candidates():
     payload = load_pickle(CANDIDATES_PKL)
