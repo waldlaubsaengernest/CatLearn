@@ -10,14 +10,20 @@ EVAL_BACKEND="${EVAL_BACKEND:-vasp}"
 N_IMAGES="${N_IMAGES:-18}"
 FMAX="${FMAX:-0.05}"
 MAX_UNC="${MAX_UNC:-0.05}"
-NEB_INTERPOLATION="${NEB_INTERPOLATION:-idpp}"
+MLNEB_PRETRAIN="${MLNEB_PRETRAIN:-}"
+if [ -n "$MLNEB_PRETRAIN" ]; then
+    NEB_INTERPOLATION="${NEB_INTERPOLATION:-$MLNEB_PRETRAIN}"
+else
+    NEB_INTERPOLATION="${NEB_INTERPOLATION:-idpp}"
+fi
 ML_STEPS="${ML_STEPS:-500}"
 AL_STEPS="${AL_STEPS:-100}"
 CLEAN_EVAL_DIR="${CLEAN_EVAL_DIR:-0}"
+RESTART="${RESTART:-0}"
 
 VASP_COMMAND="${VASP_COMMAND:-srun vasp_std}"
 
-export EVAL_BACKEND N_IMAGES FMAX MAX_UNC NEB_INTERPOLATION ML_STEPS AL_STEPS CLEAN_EVAL_DIR VASP_COMMAND
+export EVAL_BACKEND N_IMAGES FMAX MAX_UNC NEB_INTERPOLATION MLNEB_PRETRAIN ML_STEPS AL_STEPS CLEAN_EVAL_DIR RESTART VASP_COMMAND
 
 set -euo pipefail
 set -x
@@ -50,11 +56,9 @@ run_vasp_checked () {
     cd -
 }
 
-PREPARE_OUTPUT="$(mlneb-workflow prepare_state)"
-echo "$PREPARE_OUTPUT"
-eval "$(printf '%s\n' "$PREPARE_OUTPUT" | tail -n 1)"
+mlneb-workflow prepare_state
 
-if [ "${RESTART:-0}" != "1" ]; then
+if [ "${RESTART:-0}" != "1" ] && [ -z "${MLNEB_PRETRAIN:-}" ]; then
     srun mlneb-extra-worker initial "$STATE0" "$PENDING" "$CANDIDATES" "$META"
 
     unset CANDIDATE_INDEX
@@ -64,7 +68,7 @@ if [ "${RESTART:-0}" != "1" ]; then
 
     mlneb-workflow load_vasp_eval
 else
-    echo "RESTART=1; skipping initial evaluation and entering AL loop."
+    echo "Skipping initial MLNEB evaluation because RESTART=1 or MLNEB_PRETRAIN is set."
 fi
 
 for AL_STEP in $(seq 1 "$AL_STEPS"); do

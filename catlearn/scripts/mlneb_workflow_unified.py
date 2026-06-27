@@ -87,7 +87,11 @@ N_IMAGES = int(os.environ.get("N_IMAGES", "18"))
 FMAX = float(os.environ.get("FMAX", "0.05"))
 MAX_UNC = float(os.environ.get("MAX_UNC", "0.05"))
 ML_STEPS = int(os.environ.get("ML_STEPS", "500"))
-NEB_INTERPOLATION = os.environ.get("NEB_INTERPOLATION", "idpp")
+MLNEB_PRETRAIN = os.environ.get("MLNEB_PRETRAIN")
+NEB_INTERPOLATION = os.environ.get(
+    "NEB_INTERPOLATION",
+    MLNEB_PRETRAIN if MLNEB_PRETRAIN else "idpp",
+)
 
 STATE_PKL = os.path.join(D0, "catlearn_state.pkl")
 STATE_AFTER_EVAL_PKL = os.path.join(D0, "catlearn_state.pkl")
@@ -131,14 +135,71 @@ def load_state():
     with open(state, "rb") as f:
         return pickle.load(f)
 
+def atoms_has_energy_and_forces(atoms):
+    try:
+        atoms.get_potential_energy()
+        atoms.get_forces()
+        return True
+    except Exception:
+        return False
+
+
+def read_pretrain_path():
+    if not MLNEB_PRETRAIN:
+        return []
+    images = read(MLNEB_PRETRAIN, ":")
+    if not isinstance(images, list):
+        images = [images]
+    if len(images) < 2:
+        raise RuntimeError(
+            f"MLNEB_PRETRAIN={MLNEB_PRETRAIN!r} must contain at least "
+            "initial and final images."
+        )
+    return images
+
+
+def add_pretrain_data(mlneb):
+    if not MLNEB_PRETRAIN:
+        return
+
+    images = read_pretrain_path()
+    evaluated = [atoms for atoms in images if atoms_has_energy_and_forces(atoms)]
+
+    if len(evaluated) < 3:
+        raise RuntimeError(
+            f"MLNEB_PRETRAIN={MLNEB_PRETRAIN!r} contains only "
+            f"{len(evaluated)} images with energy and forces. Need at least 3 "
+            "(initial + final + one inner image)."
+        )
+
+    mlneb.add_training(evaluated)
+    if hasattr(mlneb, "save_data"):
+        mlneb.save_data()
+
+    try:
+        mlneb.e_ref = evaluated[0].get_potential_energy()
+    except Exception:
+        pass
+
+    print(
+        f"Added {len(evaluated)} MLNEB_PRETRAIN images from {MLNEB_PRETRAIN}",
+        flush=True,
+    )
+
+
 def build_mlneb_and_calc():
     os.makedirs(D0, exist_ok=True)
-    initial,final = get_endpoints()
+    if MLNEB_PRETRAIN:
+        pretrain_images = read_pretrain_path()
+        initial, final = pretrain_images[0], pretrain_images[-1]
+    else:
+        initial, final = get_endpoints()
+
     magmom        =  get_magmom()
     calc          = build_calc(magmom,D0)
     if calc is None:
         raise RuntimeError("No calculator returned. Define get_calculator() in CATLEARN_USER_MODULE.")
-    if USER_MODULE and hasattr(USER_MODULE, "ensure_endpoint_results"): 
+    if (not MLNEB_PRETRAIN) and USER_MODULE and hasattr(USER_MODULE, "ensure_endpoint_results"): 
         USER_MODULE.ensure_endpoint_results(calc,D0)
         initial,final = get_endpoints()
 
@@ -174,17 +235,10 @@ def phase_prepare_state():
     else:
         mlneb, calc = build_mlneb_and_calc()
 
-    restart_mode = bool(getattr(mlneb, "restart", False)) or bool_env("RESTART", False)
-
-    if restart_mode and hasattr(mlneb, "restart"):
-        mlneb.restart = True
+    add_pretrain_data(mlneb)
 
     dump_atomic(mlneb, STATE_PKL)
     dump_atomic(calc, CALC_PKL)
-
-    # A subprocess cannot modify the parent shell environment directly.
-    # The run script reads this last line with eval.
-    print("export RESTART=1" if restart_mode else "export RESTART=0")
 
 def phase_count_candidates():
     payload = load_pickle(CANDIDATES_PKL)
