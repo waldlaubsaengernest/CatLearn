@@ -18,12 +18,26 @@ else
 fi
 ML_STEPS="${ML_STEPS:-500}"
 AL_STEPS="${AL_STEPS:-100}"
-CLEAN_EVAL_DIR="${CLEAN_EVAL_DIR:-0}"
+CLEAN_EVAL_DIR="${CLEAN_EVAL_DIR:-1}"
 RESTART="${RESTART:-0}"
+VASP_FALLBACK_CANDIDATES="${VASP_FALLBACK_CANDIDATES:-8}"
+FALLBACK_ORDER="${FALLBACK_ORDER:-uncertainty}"
+VASP_FAIL_ON_NELM="${VASP_FAIL_ON_NELM:-1}"
 
 VASP_COMMAND="${VASP_COMMAND:-srun vasp_std}"
 
 export EVAL_BACKEND N_IMAGES FMAX MAX_UNC NEB_INTERPOLATION MLNEB_PRETRAIN ML_STEPS AL_STEPS CLEAN_EVAL_DIR RESTART VASP_COMMAND
+export VASP_FALLBACK_CANDIDATES FALLBACK_ORDER VASP_FAIL_ON_NELM
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MLNEB_SHELL_LIB="${MLNEB_SHELL_LIB:-$SCRIPT_DIR/mlneb_shell_lib.sh}"
+
+if [ ! -f "$MLNEB_SHELL_LIB" ]; then
+    echo "ERROR: MLNEB shell library not found: $MLNEB_SHELL_LIB"
+    exit 90
+fi
+
+source "$MLNEB_SHELL_LIB"
 
 set -euo pipefail
 set -x
@@ -36,27 +50,11 @@ PENDING="$D0/pending_eval.traj"
 CANDIDATES="$D0/candidates.pkl"
 META="$D0/candidate_meta.pkl"
 
-run_vasp_checked () {
-    local evaldir="$1"
-    cd "$evaldir"
-
-    $VASP_COMMAND
-    local rc=$?
-
-    if [ "$rc" -ne 0 ]; then
-        echo "ERROR: VASP failed in $evaldir with rc=$rc"
-        exit "$rc"
-    fi
-
-    if [ ! -s OUTCAR ]; then
-        echo "ERROR: OUTCAR missing/empty in $evaldir"
-        exit 91
-    fi
-
-    cd -
-}
-
 mlneb-workflow prepare_state
+
+eval "$(mlneb-workflow print_calc_env | tail -n 1)"
+export VASP_NELM
+echo "VASP_NELM=${VASP_NELM:-}"
 
 if [ "${RESTART:-0}" != "1" ] && [ -z "${MLNEB_PRETRAIN:-}" ]; then
     srun mlneb-extra-worker initial "$STATE0" "$PENDING" "$CANDIDATES" "$META"
@@ -64,7 +62,11 @@ if [ "${RESTART:-0}" != "1" ] && [ -z "${MLNEB_PRETRAIN:-}" ]; then
     unset CANDIDATE_INDEX
     mlneb-workflow write_vasp_input
     EVALDIR=$(cat "$D0/current_eval_dir.txt")
-    run_vasp_checked "$EVALDIR"
+
+    if ! mlneb_run_vasp_checked "$EVALDIR" "$VASP_COMMAND"; then
+        echo "ERROR: initial VASP evaluation failed or did not converge; no fallback candidate exists."
+        exit 94
+    fi
 
     mlneb-workflow load_vasp_eval
 else
@@ -84,27 +86,53 @@ for AL_STEP in $(seq 1 "$AL_STEPS"); do
     NCAND=$(mlneb-workflow count_candidates | tail -n 1)
     echo "AL_STEP=$AL_STEP NCAND=$NCAND"
 
-    if ! [[ "$NCAND" =~ ^[0-9]+$ ]]; then
-        echo "ERROR: count_candidates did not return an integer: '$NCAND'"
-        exit 92
-    fi
+    TARGET_SUCCESS=$(mlneb_read_target_success "$META")
+    echo "TARGET_SUCCESS=$TARGET_SUCCESS"
+
+    mlneb_require_positive_int "TARGET_SUCCESS" "$TARGET_SUCCESS"
+    mlneb_require_nonnegative_int "NCAND" "$NCAND"
 
     if [ "$NCAND" -eq 0 ]; then
         echo "No candidates returned; stopping."
         break
     fi
 
+    SUCCESS_COUNT=0
+
     for CANDIDATE_INDEX in $(seq 0 $((NCAND - 1))); do
         export CANDIDATE_INDEX
 
+        echo "Trying candidate $CANDIDATE_INDEX of $((NCAND - 1))"
         mlneb-workflow write_vasp_input
         EVALDIR=$(cat "$D0/current_eval_dir.txt")
-        run_vasp_checked "$EVALDIR"
 
-        mlneb-workflow load_vasp_eval
+        if mlneb_run_vasp_checked "$EVALDIR" "$VASP_COMMAND"; then
+            echo "Candidate $CANDIDATE_INDEX converged; loading evaluation into MLNEB."
+            mlneb-workflow load_vasp_eval
+
+            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+
+            if [ "$SUCCESS_COUNT" -ge "$TARGET_SUCCESS" ]; then
+                echo "Reached TARGET_SUCCESS=$TARGET_SUCCESS; continuing to next AL step."
+                break
+            fi
+        else
+            rc=$?
+            echo "WARNING: Candidate $CANDIDATE_INDEX failed VASP/convergence check with rc=$rc; trying next candidate."
+        fi
     done
 
     unset CANDIDATE_INDEX
+
+    if [ "$SUCCESS_COUNT" -eq 0 ]; then
+        echo "ERROR: all $NCAND candidates failed VASP/convergence check in AL_STEP=$AL_STEP."
+        exit 95
+    fi
+
+    if [ "$SUCCESS_COUNT" -lt "$TARGET_SUCCESS" ]; then
+        echo "WARNING: only $SUCCESS_COUNT of TARGET_SUCCESS=$TARGET_SUCCESS candidates converged; continuing with successful points only."
+    fi
+
     mlneb-workflow check_convergence || true
 done
 

@@ -117,6 +117,31 @@ def dump_atomic(obj, path):
 def load_pickle(path):
     with open(path, "rb") as f:
         return pickle.load(f)
+    
+def get_calc_parameter(calc, name, default=None):
+    keys = (name, name.lower(), name.upper())
+
+    for attr in ("parameters", "int_params", "float_params", "string_params", "input_params"):
+        data = getattr(calc, attr, None)
+        if not isinstance(data, dict):
+            continue
+
+        for key in keys:
+            value = data.get(key)
+            if value is not None:
+                return value
+
+    return default
+
+def phase_print_calc_env():
+    calc = load_pickle(CALC_PKL)
+
+    nelm = get_calc_parameter(calc, "nelm", None)
+
+    if nelm is not None:
+        print(f"export VASP_NELM={int(nelm)}")
+    else:
+        print("export VASP_NELM=")
 
 def save_state(mlneb):
     dump_atomic(mlneb, STATE_AFTER_EVAL_PKL)
@@ -528,7 +553,7 @@ def main():
         raise SystemExit(
             "Usage: mlneb_workflow_unified.py "
             "{prepare_state|write_eval_input|write_vasp_input|run_mace_eval|"
-            "load_eval|load_vasp_eval|count_candidates|check_convergence}"
+            "load_eval|load_vasp_eval|count_candidates|check_convergence|print_calc_env}"
         )
 
     phase = sys.argv[1]
@@ -548,6 +573,8 @@ def main():
         phase_count_candidates()
     elif phase == "check_convergence":
         phase_check_convergence()
+    elif phase == "print_calc_env":
+        phase_print_calc_env()
     else:
         raise SystemExit(f"Unknown phase: {phase}")
 

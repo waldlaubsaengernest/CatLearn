@@ -38,7 +38,7 @@ where = ["."]
 include = ["catlearn*"]
 
 [tool.setuptools]
-script-files = ["catlearn/scripts/run_mlneb_core.sh"]
+script-files = ["catlearn/scripts/run_mlneb_core.sh","catlearn/scripts/mlneb_shell_lib.sh"]
 
 [project.scripts]
 mlneb-workflow     = "catlearn.scripts.mlneb_workflow_unified:main"

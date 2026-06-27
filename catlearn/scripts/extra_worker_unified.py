@@ -98,7 +98,11 @@ def make_candidate_payloads(mlneb, candidates):
 
     This must run directly after find_next_candidates(), while the MLNEB object
     still has the prediction queues/lists in the same state as the original
-    evaluate_candidates() path expects.
+    evaluate_candidates()/broadcast_predictions() path expects.
+
+    The payload stores each candidate together with the prediction values that
+    belong to exactly that candidate. This makes it safe to reorder payloads
+    afterwards, e.g. for VASP fallback by uncertainty.
     """
     payloads = []
 
@@ -108,11 +112,15 @@ def make_candidate_payloads(mlneb, candidates):
     for candidate in candidates:
         # This mirrors what original evaluate_candidates() would do before
         # evaluate(candidate, is_predicted=True).
-        if hasattr(mlneb,"use_database_check") and mlneb.use_database_check:
+        if hasattr(mlneb, "use_database_check") and mlneb.use_database_check:
             candidate = mlneb.ensure_candidate_not_in_database(
                 candidate,
                 show_message=True,
             )
+
+        if candidate is None:
+            continue
+
         try:
             mlneb.broadcast_predictions()
         except Exception as exc:
@@ -129,7 +137,62 @@ def make_candidate_payloads(mlneb, candidates):
             }
         )
 
+    order = os.environ.get("FALLBACK_ORDER", "uncertainty").strip().lower()
+
+    if order in ("unc", "uncertainty", "uncertainties"):
+        def uncertainty_key(item):
+            value = item.get("unc", np.nan)
+            try:
+                value = float(value)
+            except Exception:
+                value = np.nan
+            return value if np.isfinite(value) else -np.inf
+
+        payloads.sort(key=uncertainty_key, reverse=True)
+
+    elif order in ("catlearn", "acquisition", "acq", "original"):
+        # Preserve CatLearn's returned order.
+        pass
+
+    else:
+        raise RuntimeError(
+            f"Unknown FALLBACK_ORDER={order!r}. "
+            "Use 'uncertainty' or 'catlearn'."
+        )
+
     return payloads
+
+
+def get_candidate_pool_settings(mlneb):
+    """Return (pool_size, target_success).
+
+    CatLearn usually returns only mlneb.n_evaluations_each candidates. If that
+    is 1 and the VASP calculation fails, the second-best point is unavailable.
+    For external VASP fallback we therefore temporarily increase
+    n_evaluations_each before find_next_candidates().
+
+    target_success preserves the original CatLearn setting: if CatLearn wanted
+    one new DFT point per AL step, the run script stops after the first
+    converged fallback candidate. If CatLearn wanted multiple points, the run
+    script accepts that many successful candidates and skips failed ones.
+    """
+    target_success = int(getattr(mlneb, "n_evaluations_each", 1))
+    target_success = max(1, target_success)
+
+    raw = (
+        os.environ.get("VASP_FALLBACK_CANDIDATES")
+        or os.environ.get("CANDIDATE_POOL_SIZE")
+        or str(target_success)
+    )
+
+    try:
+        pool_size = int(raw)
+    except Exception:
+        pool_size = target_success
+
+    pool_size = max(target_success, pool_size)
+
+    return pool_size, target_success
 
 
 def main():
@@ -177,6 +240,24 @@ def main():
         al_step = int(os.environ.get("AL_STEP", "1"))
 
         mlneb.train_mlmodel()
+
+        pool_size, target_success = get_candidate_pool_settings(mlneb)
+        original_n_evaluations_each = getattr(mlneb, "n_evaluations_each", None)
+
+        # Important:
+        # Temporarily request a larger candidate pool from CatLearn before the
+        # candidate list is truncated. This is what makes fallback possible when
+        # the usual n_evaluations_each is only 1.
+        mlneb.n_evaluations_each = pool_size
+
+        if rank == 0:
+            print(
+                f"Requesting candidate pool: pool_size={pool_size}, "
+                f"target_success={target_success}, "
+                f"fallback_order={os.environ.get('FALLBACK_ORDER', 'uncertainty')}",
+                flush=True,
+            )
+
         candidates, method_converged = mlneb.find_next_candidates(
             fmax=mlneb.scale_fmax * fmax,
             step=al_step,
@@ -185,6 +266,15 @@ def main():
             dtrust=None,
         )
 
+        # Restore the original MLNEB setting before saving the state.
+        if original_n_evaluations_each is None:
+            try:
+                delattr(mlneb, "n_evaluations_each")
+            except AttributeError:
+                pass
+        else:
+            mlneb.n_evaluations_each = original_n_evaluations_each
+
         payloads = make_candidate_payloads(mlneb, candidates)
 
         if rank == 0:
@@ -192,6 +282,9 @@ def main():
                 "method_converged": method_converged,
                 "al_step": al_step,
                 "n_candidates": len(payloads),
+                "candidate_pool_size": pool_size,
+                "target_success": target_success,
+                "fallback_order": os.environ.get("FALLBACK_ORDER", "uncertainty"),
             }
             with open(state_in, "wb") as f:
                 pickle.dump(mlneb, f)
