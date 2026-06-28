@@ -43,3 +43,4 @@ script-files = ["catlearn/scripts/run_mlneb_core.sh","catlearn/scripts/mlneb_she
 [project.scripts]
 mlneb-workflow     = "catlearn.scripts.mlneb_workflow_unified:main"
 mlneb-extra-worker = "catlearn.scripts.extra_worker_unified:main"
+mlneb-state = "catlearn.scripts.mlneb_state:main"

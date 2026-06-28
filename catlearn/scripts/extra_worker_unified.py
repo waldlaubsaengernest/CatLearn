@@ -180,7 +180,8 @@ def get_candidate_pool_settings(mlneb):
     target_success = max(1, target_success)
 
     raw = (
-        os.environ.get("VASP_FALLBACK_CANDIDATES")
+        os.environ.get("FALLBACK_CANDIDATES")
+        or os.environ.get("VASP_FALLBACK_CANDIDATES")
         or os.environ.get("CANDIDATE_POOL_SIZE")
         or str(target_success)
     )

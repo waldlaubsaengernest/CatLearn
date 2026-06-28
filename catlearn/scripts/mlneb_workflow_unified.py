@@ -21,6 +21,8 @@ from ase.io import read, write
 from ase.calculators.singlepoint import SinglePointCalculator
 from catlearn.activelearning.mlneb import MLNEB
 import importlib.util
+import shlex
+from calcfunctions import get_calcfunction
 
 def load_user_module(path=None):
     if path is None:
@@ -81,17 +83,12 @@ def bool_env(name, default=False):
 D0 = os.environ.get("D0")
 if D0 is None:
     raise RuntimeError("D0 is not set. Export D0 or pass it to run_mlneb_core.sh.")
-EVAL_BACKEND = os.environ.get("EVAL_BACKEND", "vasp").lower()  # "vasp" or "mace"
-
 N_IMAGES = int(os.environ.get("N_IMAGES", "18"))
 FMAX = float(os.environ.get("FMAX", "0.05"))
 MAX_UNC = float(os.environ.get("MAX_UNC", "0.05"))
 ML_STEPS = int(os.environ.get("ML_STEPS", "500"))
-MLNEB_PRETRAIN = os.environ.get("MLNEB_PRETRAIN")
 NEB_INTERPOLATION = os.environ.get(
-    "NEB_INTERPOLATION",
-    MLNEB_PRETRAIN if MLNEB_PRETRAIN else "idpp",
-)
+    "NEB_INTERPOLATION", "idpp")
 
 STATE_PKL = os.path.join(D0, "catlearn_state.pkl")
 STATE_AFTER_EVAL_PKL = os.path.join(D0, "catlearn_state.pkl")
@@ -135,13 +132,10 @@ def get_calc_parameter(calc, name, default=None):
 
 def phase_print_calc_env():
     calc = load_pickle(CALC_PKL)
+    calcfunc = get_calcfunction(calc)
 
-    nelm = get_calc_parameter(calc, "nelm", None)
-
-    if nelm is not None:
-        print(f"export VASP_NELM={int(nelm)}")
-    else:
-        print("export VASP_NELM=")
+    for key, value in calcfunc.shell_env().items():
+        print(f"export {key}={shlex.quote(str(value))}")
 
 def save_state(mlneb):
     dump_atomic(mlneb, STATE_AFTER_EVAL_PKL)
@@ -168,55 +162,11 @@ def atoms_has_energy_and_forces(atoms):
     except Exception:
         return False
 
-
-def read_pretrain_path():
-    if not MLNEB_PRETRAIN:
-        return []
-    images = read(MLNEB_PRETRAIN, ":")
-    if not isinstance(images, list):
-        images = [images]
-    if len(images) < 2:
-        raise RuntimeError(
-            f"MLNEB_PRETRAIN={MLNEB_PRETRAIN!r} must contain at least "
-            "initial and final images."
-        )
-    return images
-
-
-def add_pretrain_data(mlneb):
-    if not MLNEB_PRETRAIN:
-        return
-
-    images = read_pretrain_path()
-    evaluated = [atoms for atoms in images if atoms_has_energy_and_forces(atoms)]
-
-    if len(evaluated) < 3:
-        raise RuntimeError(
-            f"MLNEB_PRETRAIN={MLNEB_PRETRAIN!r} contains only "
-            f"{len(evaluated)} images with energy and forces. Need at least 3 "
-            "(initial + final + one inner image)."
-        )
-
-    mlneb.add_training(evaluated)
-    if hasattr(mlneb, "save_data"):
-        mlneb.save_data()
-
-    try:
-        mlneb.e_ref = evaluated[0].get_potential_energy()
-    except Exception:
-        pass
-
-    print(
-        f"Added {len(evaluated)} MLNEB_PRETRAIN images from {MLNEB_PRETRAIN}",
-        flush=True,
-    )
-
-
 def build_mlneb_and_calc():
     os.makedirs(D0, exist_ok=True)
-    if MLNEB_PRETRAIN:
-        pretrain_images = read_pretrain_path()
-        initial, final = pretrain_images[0], pretrain_images[-1]
+    if ".traj" in NEB_INTERPOLATION:
+        inp_path       = read(NEB_INTERPOLATION)
+        initial, final = inp_path[0], inp_path[-1]
     else:
         initial, final = get_endpoints()
 
@@ -224,14 +174,15 @@ def build_mlneb_and_calc():
     calc          = build_calc(magmom,D0)
     if calc is None:
         raise RuntimeError("No calculator returned. Define get_calculator() in CATLEARN_USER_MODULE.")
-    if (not MLNEB_PRETRAIN) and USER_MODULE and hasattr(USER_MODULE, "ensure_endpoint_results"): 
+    if USER_MODULE and hasattr(USER_MODULE, "ensure_endpoint_results"): 
         USER_MODULE.ensure_endpoint_results(calc,D0)
         initial,final = get_endpoints()
 
     mlneb_calc = deepcopy(calc)
-    if EVAL_BACKEND == "vasp":
-        mlneb_calc.directory = os.path.join(D0, "mlneb")
-
+    mlneb_calc = get_calcfunction(calc).prepare_mlneb_calc(mlneb_calc, D0)
+    
+    restart = False
+    if os.environ.get("RESTART", "0") == "1": restart=True
     mlneb = MLNEB(
         start=initial,
         end=final,
@@ -249,6 +200,7 @@ def build_mlneb_and_calc():
         parallel_run=True,
         parallel_eval=False,
         seed=1,
+        restart=restart,
     )
     return mlneb, calc
 
@@ -259,8 +211,8 @@ def phase_prepare_state():
         mlneb = inp.mlneb
     else:
         mlneb, calc = build_mlneb_and_calc()
-
-    add_pretrain_data(mlneb)
+    
+    if hasattr(mlneb,"restart") and mlneb.restart: os.environ["RESTART"] = "1"
 
     dump_atomic(mlneb, STATE_PKL)
     dump_atomic(calc, CALC_PKL)
@@ -300,18 +252,9 @@ def phase_write_eval_input():
     eval_dir = get_eval_dir(candidate_index)
     clean_eval_dir(eval_dir)
 
-    if EVAL_BACKEND == "vasp":
-        calc = load_pickle(CALC_PKL)
-        atoms.calc = deepcopy(calc)
-        atoms.calc.directory = eval_dir
-        
-        if USER_MODULE and hasattr(USER_MODULE, "update_dipol"):
-            atoms.calc = USER_MODULE.update_dipol(atoms, atoms.calc)
-
-        atoms.calc.write_input(atoms)
-
-    # In both modes keep an explicit input structure.
-    write(os.path.join(eval_dir, "input_atoms.traj"), atoms)
+    calc = load_pickle(CALC_PKL)
+    calcfunc = get_calcfunction(calc)
+    calcfunc.write_input(atoms, eval_dir, calc=calc, user_module=USER_MODULE)
 
     with open(CURRENT_EVAL_DIR_TXT, "w") as f:
         f.write(eval_dir + "\n")
@@ -319,170 +262,33 @@ def phase_write_eval_input():
 # Backward-compatible phase name.
 phase_write_vasp_input = phase_write_eval_input
 
-def phase_run_mace_eval():
-    if EVAL_BACKEND != "mace":
-        raise RuntimeError("run_mace_eval phase requires EVAL_BACKEND=mace")
-
-    calc = load_pickle(CALC_PKL)
+def get_current_eval_dir():
     with open(CURRENT_EVAL_DIR_TXT) as f:
-        eval_dir = f.read().strip()
-
-    atoms = read(os.path.join(eval_dir, "input_atoms.traj"))
-    atoms.calc = deepcopy(calc)
-
-    energy = atoms.get_potential_energy()
-    forces = atoms.get_forces()
-
-    atoms.calc = SinglePointCalculator(atoms, energy=energy, forces=forces)
-    write(os.path.join(eval_dir, "evaluated.traj"), atoms)
-
-def read_ase_sort_file(eval_dir):
-    path = os.path.join(eval_dir, "ase-sort.dat")
-
-    if not os.path.exists(path):
-        return None, None
-
-    sort = []
-    resort = []
-
-    with open(path) as f:
-        for line in f:
-            parts = line.split()
-            if len(parts) < 2:
-                continue
-            sort.append(int(parts[0]))
-            resort.append(int(parts[1]))
-
-    return np.asarray(sort, dtype=int), np.asarray(resort, dtype=int)
+        return f.read().strip()
 
 
-def reorder_vasp_result_to_catlearn_order(eval_dir, atoms):
-    """
-    VASP/ASE may sort atoms by element when writing POSCAR.
+def phase_run_singlepoint():
+    calc = load_pickle(CALC_PKL)
+    calcfunc = get_calcfunction(calc)
+    calcfunc.run_singlepoint(get_current_eval_dir(), calc=calc)
 
-    CatLearn needs the original atom-index order.  This function converts the
-    Atoms object read from OUTCAR/vasprun.xml back to the order stored in
-    input_atoms.traj.
 
-    Positions, symbols and forces are transformed together.
-    """
+def phase_run_mace_eval():
+    # Backward-compatible phase name used by older local debug scripts.
+    phase_run_singlepoint()
 
-    input_atoms_path = os.path.join(eval_dir, "input_atoms.traj")
 
-    if not os.path.exists(input_atoms_path):
-        print(
-            f"[VASP-REORDER] no input_atoms.traj in {eval_dir}; "
-            "leaving result unchanged",
-            flush=True,
-        )
-        return atoms
+def phase_check_eval():
+    calc = load_pickle(CALC_PKL)
+    calcfunc = get_calcfunction(calc)
+    calcfunc.check_eval(get_current_eval_dir())
 
-    ref = read(input_atoms_path)
 
-    if len(ref) != len(atoms):
-        raise RuntimeError(
-            f"[VASP-REORDER] atom count mismatch in {eval_dir}: "
-            f"input_atoms={len(ref)} result={len(atoms)}"
-        )
-
-    ref_numbers = np.asarray(ref.get_atomic_numbers())
-    result_numbers = np.asarray(atoms.get_atomic_numbers())
-
-    sort, resort = read_ase_sort_file(eval_dir)
-
-    # Case 1: result already has CatLearn order.
-    if np.array_equal(result_numbers, ref_numbers):
-        print(
-            "[VASP-REORDER] result already in CatLearn atom order",
-            flush=True,
-        )
-        return atoms
-
-    if sort is None or resort is None:
-        raise RuntimeError(
-            f"[VASP-REORDER] atom order changed but ase-sort.dat missing "
-            f"in {eval_dir}"
-        )
-
-    if len(resort) != len(atoms):
-        raise RuntimeError(
-            f"[VASP-REORDER] ase-sort.dat length mismatch in {eval_dir}: "
-            f"{len(resort)} entries for {len(atoms)} atoms"
-        )
-
-    # Usually this is the correct inverse map:
-    # sorted_result[resort] -> original CatLearn order.
-    if np.array_equal(result_numbers[resort], ref_numbers):
-        index = resort
-        map_name = "resort"
-    elif np.array_equal(result_numbers[sort], ref_numbers):
-        index = sort
-        map_name = "sort"
-    else:
-        bad = np.where(result_numbers != ref_numbers)[0][:20]
-        msg = "\n".join(
-            f"{i}: ref={ref[i].symbol} result={atoms[i].symbol}"
-            for i in bad
-        )
-        raise RuntimeError(
-            "[VASP-REORDER] cannot map VASP result back to CatLearn order.\n"
-            f"First direct mismatches:\n{msg}"
-        )
-
-    energy = atoms.get_potential_energy()
-    forces = atoms.get_forces()
-
-    reordered = ref.copy()
-    reordered.set_positions(atoms.get_positions()[index])
-    reordered.set_cell(atoms.get_cell())
-    reordered.set_pbc(atoms.get_pbc())
-
-    # Keep CatLearn symbols/order explicitly.
-    reordered.set_atomic_numbers(ref.get_atomic_numbers())
-
-    # Preserve useful metadata from CatLearn-side input.
-    reordered.set_constraint(ref.constraints)
-    reordered.set_tags(ref.get_tags())
-
-    reordered.calc = SinglePointCalculator(
-        reordered,
-        energy=float(energy),
-        forces=np.asarray(forces)[index],
-    )
-
-    print(
-        f"[VASP-REORDER] transformed VASP result to CatLearn order using {map_name}",
-        flush=True,
-    )
-
-    write(os.path.join(eval_dir, "evaluated_reordered_debug.traj"), reordered)
-
-    return reordered
 
 def read_evaluated_atoms(eval_dir):
-    if EVAL_BACKEND in ("mace", "traj", "replay"):
-        path = os.path.join(eval_dir, "evaluated.traj")
-        if not os.path.exists(path):
-            raise FileNotFoundError(path)
-        return read(path)
-
-    vasprun = os.path.join(eval_dir, "vasprun.xml")
-    outcar = os.path.join(eval_dir, "OUTCAR")
-
-    if os.path.exists(vasprun):
-        atoms = read(vasprun, index=-1)
-    elif os.path.exists(outcar):
-        atoms = read(outcar, index=-1)
-    else:
-        raise FileNotFoundError(
-            f"Neither vasprun.xml nor OUTCAR found in {eval_dir}"
-        )
-
-    atoms = reorder_vasp_result_to_catlearn_order(eval_dir, atoms)
-
-    write(os.path.join(eval_dir, "evaluated.traj"), atoms)
-
-    return atoms
+    calc = load_pickle(CALC_PKL)
+    calcfunc = get_calcfunction(calc)
+    return calcfunc.read_results(eval_dir)
 
 
 def apply_prediction_payload(mlneb):
@@ -552,8 +358,9 @@ def main():
     if len(sys.argv) < 2:
         raise SystemExit(
             "Usage: mlneb_workflow_unified.py "
-            "{prepare_state|write_eval_input|write_vasp_input|run_mace_eval|"
-            "load_eval|load_vasp_eval|count_candidates|check_convergence|print_calc_env}"
+            "{prepare_state|write_eval_input|write_vasp_input|run_singlepoint|"
+            "run_mace_eval|check_eval|load_eval|load_vasp_eval|"
+            "count_candidates|check_convergence|print_calc_env}"
         )
 
     phase = sys.argv[1]
@@ -563,8 +370,12 @@ def main():
         phase_write_eval_input()
     elif phase == "write_vasp_input":
         phase_write_vasp_input()
+    elif phase == "run_singlepoint":
+        phase_run_singlepoint()
     elif phase == "run_mace_eval":
         phase_run_mace_eval()
+    elif phase == "check_eval":
+        phase_check_eval()
     elif phase == "load_eval":
         phase_load_eval()
     elif phase == "load_vasp_eval":

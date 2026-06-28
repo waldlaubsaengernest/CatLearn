@@ -6,28 +6,23 @@ D0="${D0:-$PWD}"
 export INPUT D0
 echo D0
 
-EVAL_BACKEND="${EVAL_BACKEND:-vasp}"
 N_IMAGES="${N_IMAGES:-18}"
 FMAX="${FMAX:-0.05}"
 MAX_UNC="${MAX_UNC:-0.05}"
-MLNEB_PRETRAIN="${MLNEB_PRETRAIN:-}"
-if [ -n "$MLNEB_PRETRAIN" ]; then
-    NEB_INTERPOLATION="${NEB_INTERPOLATION:-$MLNEB_PRETRAIN}"
-else
-    NEB_INTERPOLATION="${NEB_INTERPOLATION:-idpp}"
-fi
+NEB_INTERPOLATION="${NEB_INTERPOLATION:-idpp}"
 ML_STEPS="${ML_STEPS:-500}"
 AL_STEPS="${AL_STEPS:-100}"
 CLEAN_EVAL_DIR="${CLEAN_EVAL_DIR:-1}"
 RESTART="${RESTART:-0}"
-VASP_FALLBACK_CANDIDATES="${VASP_FALLBACK_CANDIDATES:-8}"
+FALLBACK_CANDIDATES="${FALLBACK_CANDIDATES:-${VASP_FALLBACK_CANDIDATES:-8}}"
+VASP_FALLBACK_CANDIDATES="${VASP_FALLBACK_CANDIDATES:-$FALLBACK_CANDIDATES}"
 FALLBACK_ORDER="${FALLBACK_ORDER:-uncertainty}"
 VASP_FAIL_ON_NELM="${VASP_FAIL_ON_NELM:-1}"
 
 VASP_COMMAND="${VASP_COMMAND:-srun vasp_std}"
 
-export EVAL_BACKEND N_IMAGES FMAX MAX_UNC NEB_INTERPOLATION MLNEB_PRETRAIN ML_STEPS AL_STEPS CLEAN_EVAL_DIR RESTART VASP_COMMAND
-export VASP_FALLBACK_CANDIDATES FALLBACK_ORDER VASP_FAIL_ON_NELM
+export N_IMAGES FMAX MAX_UNC NEB_INTERPOLATION ML_STEPS AL_STEPS CLEAN_EVAL_DIR RESTART VASP_COMMAND
+export FALLBACK_CANDIDATES VASP_FALLBACK_CANDIDATES FALLBACK_ORDER VASP_FAIL_ON_NELM
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MLNEB_SHELL_LIB="${MLNEB_SHELL_LIB:-$SCRIPT_DIR/mlneb_shell_lib.sh}"
@@ -52,25 +47,28 @@ META="$D0/candidate_meta.pkl"
 
 mlneb-workflow prepare_state
 
-eval "$(mlneb-workflow print_calc_env | tail -n 1)"
-export VASP_NELM
+eval "$(mlneb-workflow print_calc_env)"
+export MLNEB_CALC_NAME MLNEB_CALC_COMMAND MLNEB_CALC_RUN_IN_EVAL_DIR VASP_NELM
+echo "MLNEB_CALC_NAME=${MLNEB_CALC_NAME:-}"
+echo "MLNEB_CALC_COMMAND=${MLNEB_CALC_COMMAND:-}"
+echo "MLNEB_CALC_RUN_IN_EVAL_DIR=${MLNEB_CALC_RUN_IN_EVAL_DIR:-}"
 echo "VASP_NELM=${VASP_NELM:-}"
 
-if [ "${RESTART:-0}" != "1" ] && [ -z "${MLNEB_PRETRAIN:-}" ]; then
+if [ "${RESTART:-0}" != "1" ]; then
     srun mlneb-extra-worker initial "$STATE0" "$PENDING" "$CANDIDATES" "$META"
 
     unset CANDIDATE_INDEX
     mlneb-workflow write_vasp_input
     EVALDIR=$(cat "$D0/current_eval_dir.txt")
 
-    if ! mlneb_run_vasp_checked "$EVALDIR" "$VASP_COMMAND"; then
-        echo "ERROR: initial VASP evaluation failed or did not converge; no fallback candidate exists."
+    if ! mlneb_run_calculation_checked "$EVALDIR"; then
+        echo "ERROR: initial single point failed or did not pass checks; no fallback candidate exists."
         exit 94
     fi
 
     mlneb-workflow load_vasp_eval
 else
-    echo "Skipping initial MLNEB evaluation because RESTART=1 or MLNEB_PRETRAIN is set."
+    echo "Skipping initial MLNEB evaluation because RESTART=1 is set."
 fi
 
 for AL_STEP in $(seq 1 "$AL_STEPS"); do
@@ -106,8 +104,8 @@ for AL_STEP in $(seq 1 "$AL_STEPS"); do
         mlneb-workflow write_vasp_input
         EVALDIR=$(cat "$D0/current_eval_dir.txt")
 
-        if mlneb_run_vasp_checked "$EVALDIR" "$VASP_COMMAND"; then
-            echo "Candidate $CANDIDATE_INDEX converged; loading evaluation into MLNEB."
+        if mlneb_run_calculation_checked "$EVALDIR"; then
+            echo "Candidate $CANDIDATE_INDEX passed checks; loading evaluation into MLNEB."
             mlneb-workflow load_vasp_eval
 
             SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
@@ -118,14 +116,14 @@ for AL_STEP in $(seq 1 "$AL_STEPS"); do
             fi
         else
             rc=$?
-            echo "WARNING: Candidate $CANDIDATE_INDEX failed VASP/convergence check with rc=$rc; trying next candidate."
+            echo "WARNING: Candidate $CANDIDATE_INDEX failed single point/check with rc=$rc; trying next candidate."
         fi
     done
 
     unset CANDIDATE_INDEX
 
     if [ "$SUCCESS_COUNT" -eq 0 ]; then
-        echo "ERROR: all $NCAND candidates failed VASP/convergence check in AL_STEP=$AL_STEP."
+        echo "ERROR: all $NCAND candidates failed single point/check in AL_STEP=$AL_STEP."
         exit 95
     fi
 

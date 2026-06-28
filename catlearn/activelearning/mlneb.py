@@ -264,6 +264,7 @@ class MLNEB(ActiveLearning):
             comm: MPI communicator.
                 The MPI communicator.
         """
+        self.restart = restart
         # Save the end points for creating the NEB
         self.setup_endpoints(start, end, prev_calculations)
         # Build the optimizer method and NEB within
