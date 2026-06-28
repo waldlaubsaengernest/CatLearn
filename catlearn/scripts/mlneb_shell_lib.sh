@@ -65,7 +65,6 @@ else:
     nelm = 60
 
 if os.path.isfile(incar):
-if os.path.isfile(incar):
     for raw_line in open(incar, errors="ignore"):
         line = raw_line.split("#", 1)[0].split("!", 1)[0]
         match = re.search(r"\bNELM\s*=\s*([0-9]+)", line, flags=re.I)
