@@ -147,6 +147,12 @@ The calculation backend is vasp by default, meaning that the VASP-specific workf
 ```shell
 export EVAL_BACKEND=vasp
 ```
+## Restarting the NEB
+You can restart the NEB setting ```restart=True``` in the ```MLNEB()``` definition, in the workflow using auto-generation you need to set ```export RESTART=1``` in the runscript.
+This forks includes a new command line tool writing you any state of the neb into a new folder. For this you need to use ```mlneb-state N``` where N is the state number. You can list all states using ```mlneb-state list```.
+
+## Checking Calculator Convergence
+Calculators can fail which stops the workflow. You can set the option ```VASP_FAIL_ON_NELM=0``` in case you want the calculator to try other candidates instead of crashing.
 
 ## Repository Structure
 
