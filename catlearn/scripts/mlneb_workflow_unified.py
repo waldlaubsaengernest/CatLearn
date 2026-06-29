@@ -22,7 +22,7 @@ from ase.calculators.singlepoint import SinglePointCalculator
 from catlearn.activelearning.mlneb import MLNEB
 import importlib.util
 import shlex
-from calcfunctions import get_calcfunction
+from .calcfunctions import get_calcfunction
 
 def load_user_module(path=None):
     if path is None:
