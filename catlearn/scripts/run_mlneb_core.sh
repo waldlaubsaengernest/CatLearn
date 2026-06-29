@@ -54,9 +54,13 @@ echo "MLNEB_CALC_COMMAND=${MLNEB_CALC_COMMAND:-}"
 echo "MLNEB_CALC_RUN_IN_EVAL_DIR=${MLNEB_CALC_RUN_IN_EVAL_DIR:-}"
 echo "VASP_NELM=${VASP_NELM:-}"
 
+if [ -f "$D0/MLNEB_RESTART_REQUESTED" ]; then
+    export RESTART=1
+fi
+echo "RESTART=$RESTART"
+
 if [ "${RESTART:-0}" != "1" ]; then
     srun mlneb-extra-worker initial "$STATE0" "$PENDING" "$CANDIDATES" "$META"
-
     unset CANDIDATE_INDEX
     mlneb-workflow write_vasp_input
     EVALDIR=$(cat "$D0/current_eval_dir.txt")

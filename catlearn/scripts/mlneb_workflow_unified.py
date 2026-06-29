@@ -212,7 +212,18 @@ def phase_prepare_state():
     else:
         mlneb, calc = build_mlneb_and_calc()
     
-    if hasattr(mlneb,"restart") and mlneb.restart: os.environ["RESTART"] = "1"
+    if hasattr(mlneb,"restart") and mlneb.restart:
+        os.environ["RESTART"] = "1"
+
+    restart_file = os.path.join(D0, "MLNEB_RESTART_REQUESTED")
+
+    if hasattr(mlneb, "restart") and mlneb.restart:
+        os.environ["RESTART"] = "1"
+        with open(restart_file, "w") as f:
+            f.write("1\n")
+    else:
+        if os.path.exists(restart_file):
+            os.remove(restart_file)
 
     dump_atomic(mlneb, STATE_PKL)
     dump_atomic(calc, CALC_PKL)
