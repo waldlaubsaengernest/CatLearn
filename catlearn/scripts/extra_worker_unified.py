@@ -272,7 +272,17 @@ def main():
                 f"fallback_order={os.environ.get('FALLBACK_ORDER', 'uncertainty')}",
                 flush=True,
             )
+        try:
+            from catlearn.scripts.mlneb_workflow_unified import (repair_mlneb_internal_constraints,
+                install_mlneb_constraint_guard,)
+            repair_mlneb_internal_constraints(mlneb)
+            install_mlneb_constraint_guard(mlneb)
+        except Exception as exc:
+            raise RuntimeError(f"failed to install MLNEB constraint guard in worker: {exc}") from exc
 
+        with open("mlneb_debug_state.pkl", "wb") as f:
+            pickle.dump(mlneb, f)
+            
         candidates, method_converged = mlneb.find_next_candidates(
             fmax=mlneb.scale_fmax * fmax,
             step=al_step,
