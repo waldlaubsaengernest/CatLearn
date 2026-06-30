@@ -186,12 +186,26 @@ def get_candidate_pool_settings(mlneb):
         or str(target_success)
     )
 
+    nimages = mlneb.n_images
+
     try:
         pool_size = int(raw)
     except Exception:
         pool_size = target_success
 
     pool_size = max(target_success, pool_size)
+    
+    if nimages is not None:
+        max_candidates = max(1, int(nimages) - 2)
+        if int(pool_size) > max_candidates:
+            print(
+                f"Candidate pool clipped: requested {raw}, "
+                f"but only {max_candidates} internal images exist "
+                f"(nimages={nimages}).",
+                flush=True,
+            )
+            pool_size = max_candidates
+
 
     return pool_size, target_success
 

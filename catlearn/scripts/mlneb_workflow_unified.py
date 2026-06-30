@@ -44,6 +44,48 @@ def get_magmom():
 
 import inspect
 
+def _as_atoms(obj):
+    return getattr(obj, "atoms", obj)
+
+def _fixed_count(atoms):
+    fixed = set()
+    for c in getattr(atoms, "constraints", []):
+        if hasattr(c, "index"):
+            idx = c.index
+            try:
+                fixed.update(int(i) for i in idx)
+            except TypeError:
+                fixed.add(int(idx))
+    return len(fixed)
+
+def repair_mlneb_internal_constraints(mlneb):
+    ref = _as_atoms(mlneb.structures[0])
+    ref_constraints = deepcopy(ref.constraints)
+    ref_numbers = ref.get_atomic_numbers()
+
+    for attr in ["structures", "best_structures", "prev_calculations", "images", "evaluated"]:
+        objs = getattr(mlneb, attr, None)
+        if objs is None:
+            continue
+        if not isinstance(objs, (list, tuple)):
+            objs = [objs]
+
+        for i, obj in enumerate(objs):
+            atoms = _as_atoms(obj)
+
+            if len(atoms) != len(ref):
+                raise RuntimeError(f"{attr}[{i}]: atom count mismatch")
+            if not np.array_equal(atoms.get_atomic_numbers(), ref_numbers):
+                raise RuntimeError(f"{attr}[{i}]: atomic numbers/order mismatch")
+
+            if _fixed_count(atoms) != _fixed_count(ref):
+                print(
+                    f"repair constraints: {attr}[{i}] "
+                    f"{_fixed_count(atoms)} -> {_fixed_count(ref)}",
+                    flush=True,
+                )
+                atoms.set_constraint(deepcopy(ref_constraints))
+
 def build_calc(magmom=None, workdir=None):
     if USER_MODULE and hasattr(USER_MODULE, "get_calculator"):
         func = USER_MODULE.get_calculator
@@ -221,6 +263,7 @@ def phase_prepare_state():
         os.environ["RESTART"] = "1"
         with open(restart_file, "w") as f:
             f.write("1\n")
+        repair_mlneb_internal_constraints(mlneb)
     else:
         if os.path.exists(restart_file):
             os.remove(restart_file)
