@@ -47,7 +47,7 @@ import inspect
 def _as_atoms(obj):
     return getattr(obj, "atoms", obj)
 
-def _fixed_count(atoms):
+def _fixed_indices(atoms):
     fixed = set()
     for c in getattr(atoms, "constraints", []):
         if hasattr(c, "index"):
@@ -56,12 +56,48 @@ def _fixed_count(atoms):
                 fixed.update(int(i) for i in idx)
             except TypeError:
                 fixed.add(int(idx))
-    return len(fixed)
+    return tuple(sorted(fixed))
+
+def _fixed_count(atoms):
+    return len(_fixed_indices(atoms))
+
+def _same_atom_order(a, b):
+    return len(a) == len(b) and np.array_equal(a.get_atomic_numbers(), b.get_atomic_numbers())
+
+def _apply_reference_constraints(atoms, ref, ref_constraints=None, label="atoms"):
+    atoms = _as_atoms(atoms)
+    ref = _as_atoms(ref)
+
+    if not _same_atom_order(atoms, ref):
+        raise RuntimeError(f"{label}: atom count/order mismatch while applying constraints")
+
+    if ref_constraints is None:
+        ref_constraints = ref.constraints
+
+    before = _fixed_count(atoms)
+    expected = _fixed_count(ref)
+
+    # Always set the exact reference constraints, not only when the count differs.
+    # Same count but different FixAtoms object/index mask would still change the
+    # GP fingerprint dimension or ordering in CatLearn.
+    atoms.set_constraint(deepcopy(ref_constraints))
+
+    after = _fixed_count(atoms)
+    if before != after:
+        print(f"constraint repair: {label} n_fixed {before} -> {after}", flush=True)
+
+    if after != expected:
+        raise RuntimeError(
+            f"{label}: constraint repair failed; expected {expected} fixed atoms, got {after}"
+        )
 
 def repair_mlneb_internal_constraints(mlneb):
+    """Repair constraints on all Atoms already stored inside the MLNEB object."""
+    if not hasattr(mlneb, "structures") or not mlneb.structures:
+        return
+
     ref = _as_atoms(mlneb.structures[0])
     ref_constraints = deepcopy(ref.constraints)
-    ref_numbers = ref.get_atomic_numbers()
 
     for attr in ["structures", "best_structures", "prev_calculations", "images", "evaluated"]:
         objs = getattr(mlneb, attr, None)
@@ -71,20 +107,97 @@ def repair_mlneb_internal_constraints(mlneb):
             objs = [objs]
 
         for i, obj in enumerate(objs):
-            atoms = _as_atoms(obj)
+            _apply_reference_constraints(
+                _as_atoms(obj),
+                ref,
+                ref_constraints=ref_constraints,
+                label=f"mlneb.{attr}[{i}]",
+            )
 
-            if len(atoms) != len(ref):
-                raise RuntimeError(f"{attr}[{i}]: atom count mismatch")
-            if not np.array_equal(atoms.get_atomic_numbers(), ref_numbers):
-                raise RuntimeError(f"{attr}[{i}]: atomic numbers/order mismatch")
+def install_mlneb_constraint_guard(mlneb):
+    """
+    Runtime guard for CatLearn's next-step copy path.
 
-            if _fixed_count(atoms) != _fixed_count(ref):
-                print(
-                    f"repair constraints: {attr}[{i}] "
-                    f"{_fixed_count(atoms)} -> {_fixed_count(ref)}",
-                    flush=True,
-                )
-                atoms.set_constraint(deepcopy(ref_constraints))
+    CatLearn can create copied Structure/Atoms objects during
+    find_next_candidate(s) and lose ASE constraints there.  This installs a
+    process-local guard on catlearn.structures.structure.Structure.get_forces()
+    and get_potential_energy() so copied objects get the reference constraints
+    immediately before the GP fingerprint is generated.
+
+    IMPORTANT: this must be called in the same Python process that calls
+    mlneb.find_next_candidates().  Calling it only in prepare_state is not
+    enough if the next step runs in a separate `srun mlneb-extra-worker` process.
+    """
+    if not hasattr(mlneb, "structures") or not mlneb.structures:
+        return
+
+    if getattr(mlneb, "_constraint_guard_installed", False):
+        repair_mlneb_internal_constraints(mlneb)
+        install_mlneb_constraint_guard(mlneb)
+        return
+
+    ref = _as_atoms(mlneb.structures[0])
+    ref_constraints = deepcopy(ref.constraints)
+    ref_numbers = ref.get_atomic_numbers().copy()
+    ref_nfixed = _fixed_count(ref)
+
+    def apply_to_maybe_atoms(obj):
+        atoms = _as_atoms(obj)
+        if atoms is None:
+            return
+        if len(atoms) != len(ref):
+            return
+        if not np.array_equal(atoms.get_atomic_numbers(), ref_numbers):
+            return
+
+        before = _fixed_count(atoms)
+        atoms.set_constraint(deepcopy(ref_constraints))
+        after = _fixed_count(atoms)
+
+        if before != after:
+            print(
+                f"constraint guard: repaired copied CatLearn structure "
+                f"n_fixed {before} -> {after}",
+                flush=True,
+            )
+
+        if after != ref_nfixed:
+            raise RuntimeError(
+                f"constraint guard failed: expected {ref_nfixed} fixed atoms, got {after}"
+            )
+
+    import catlearn.structures.structure as structure_mod
+    Structure = structure_mod.Structure
+
+    if not hasattr(Structure, "_constraint_guard_orig_get_forces"):
+        Structure._constraint_guard_orig_get_forces = Structure.get_forces
+
+        def guarded_get_forces(self, *args, **kwargs):
+            apply_to_maybe_atoms(getattr(self, "atoms", None))
+            return Structure._constraint_guard_orig_get_forces(self, *args, **kwargs)
+
+        Structure.get_forces = guarded_get_forces
+
+    if hasattr(Structure, "get_potential_energy") and not hasattr(
+        Structure, "_constraint_guard_orig_get_potential_energy"
+    ):
+        Structure._constraint_guard_orig_get_potential_energy = Structure.get_potential_energy
+
+        def guarded_get_potential_energy(self, *args, **kwargs):
+            apply_to_maybe_atoms(getattr(self, "atoms", None))
+            return Structure._constraint_guard_orig_get_potential_energy(self, *args, **kwargs)
+
+        Structure.get_potential_energy = guarded_get_potential_energy
+
+    repair_mlneb_internal_constraints(mlneb)
+    mlneb._constraint_guard_installed = True
+
+    print(
+        f"constraint guard installed: natoms={len(ref)}, n_fixed={ref_nfixed}",
+        flush=True,
+    )
+
+
 
 def build_calc(magmom=None, workdir=None):
     if USER_MODULE and hasattr(USER_MODULE, "get_calculator"):
