@@ -249,7 +249,7 @@ class VASPcalc(BaseDFTcalc):
             )
             return
 
-        if fail_on_nelm and last_finished_e_step >= nelm:
+        if last_finished_e_step >= nelm:
             raise RuntimeError(
                 f"[VASP] last electronic cycle used {last_finished_e_step} "
                 f"steps, NELM={nelm}; treating as unconverged"
