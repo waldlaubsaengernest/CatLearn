@@ -239,9 +239,25 @@ def main():
         os.environ["CATLEARN_PENDING_TRAJ"] = pending_traj
 
         try:
+            from .adjust_constrains import (
+                repair_mlneb_internal_constraints,
+                repair_mlneb_database_targets,
+                repair_mlneb_training_state,
+                install_mlneb_constraint_guard,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"failed to import MLNEB constraint fix: {exc}") from exc
+
+        repair_mlneb_training_state(mlneb)
+        uninstall_guard = install_mlneb_constraint_guard(mlneb)
+
+        try:
             mlneb.extra_initial_data()
         except SystemExit:
             pass
+
+        uninstall_guard()
+        repair_mlneb_training_state(mlneb)
 
         comm.Barrier()
         if rank == 0:
