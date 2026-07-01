@@ -35,6 +35,86 @@ def _fixed_indices(atoms):
 def _fixed_count(atoms):
     return len(_fixed_indices(atoms))
 
+
+def _iter_atoms_like(obj, depth=0):
+    """Yield Atoms-like objects from nested CatLearn/ASE containers."""
+    if obj is None or depth > 5:
+        return
+
+    atoms = _as_atoms(obj)
+    if hasattr(atoms, "get_atomic_numbers") and hasattr(atoms, "set_constraint"):
+        yield atoms
+        return
+
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            yield from _iter_atoms_like(item, depth + 1)
+        return
+
+    if isinstance(obj, dict):
+        for value in obj.values():
+            yield from _iter_atoms_like(value, depth + 1)
+        return
+
+
+def get_mlneb_constraint_reference(mlneb, require_fixed=True):
+    """Find a constrained Atoms object to use as FixAtoms reference."""
+    candidates = []
+
+    for attr in ["structures", "best_structures", "prev_calculations", "images", "evaluated"]:
+        for atoms in _iter_atoms_like(getattr(mlneb, attr, None)):
+            candidates.append((f"mlneb.{attr}", atoms))
+
+    try:
+        db = mlneb.mlcalc.mlmodel.database
+    except Exception:
+        db = None
+
+    if db is not None:
+        for attr in ["atoms_list", "atoms", "structures", "data", "images", "candidates"]:
+            for atoms in _iter_atoms_like(getattr(db, attr, None)):
+                candidates.append((f"database.{attr}", atoms))
+
+        for attr, value in getattr(db, "__dict__", {}).items():
+            if attr in {"targets", "features"} or attr.startswith("_"):
+                continue
+            if attr in ["atoms_list", "atoms", "structures", "data", "images", "candidates"]:
+                continue
+            if isinstance(value, (list, tuple, dict)):
+                for atoms in _iter_atoms_like(value):
+                    candidates.append((f"database.{attr}", atoms))
+
+    best_label = None
+    best_atoms = None
+    best_nfixed = -1
+
+    for label, atoms in candidates:
+        nfix = _fixed_count(atoms)
+        if nfix > best_nfixed:
+            best_label = label
+            best_atoms = atoms
+            best_nfixed = nfix
+
+    if best_atoms is None:
+        raise RuntimeError("could not find any Atoms object in MLNEB state for constraint reference")
+
+    if require_fixed and best_nfixed <= 0:
+        raise RuntimeError(
+            "could not find a constrained reference Atoms object in MLNEB state; "
+            "all inspected Atoms have n_fixed=0. Do not continue silently with "
+            "expected_dim == all_atom_dim."
+        )
+
+    if best_label != "mlneb.structures" or best_nfixed <= 0:
+        print(f"constraint reference: using {best_label} with n_fixed={best_nfixed}", flush=True)
+
+    return best_atoms
+
+
+def get_mlneb_reference_constraints(mlneb, require_fixed=True):
+    ref = get_mlneb_constraint_reference(mlneb, require_fixed=require_fixed)
+    return ref, deepcopy(ref.constraints)
+
 def _same_atom_order(a, b):
     return len(a) == len(b) and np.array_equal(a.get_atomic_numbers(), b.get_atomic_numbers())
 
@@ -67,13 +147,10 @@ def _apply_reference_constraints(atoms, ref, ref_constraints=None, label="atoms"
 
 def repair_mlneb_internal_constraints(mlneb):
     """Repair constraints on all Atoms already stored inside the MLNEB object."""
-    repair_mlneb_database_atoms(mlneb)
-
     if not hasattr(mlneb, "structures") or not mlneb.structures:
         return
 
-    ref = _as_atoms(mlneb.structures[0])
-    ref_constraints = deepcopy(ref.constraints)
+    ref, ref_constraints = get_mlneb_reference_constraints(mlneb)
 
     for attr in ["structures", "best_structures", "prev_calculations", "images", "evaluated"]:
         objs = getattr(mlneb, attr, None)
@@ -155,8 +232,7 @@ def repair_mlneb_database_atoms(mlneb):
     except Exception:
         return
 
-    ref = _as_atoms(mlneb.structures[0])
-    ref_constraints = deepcopy(ref.constraints)
+    ref, ref_constraints = get_mlneb_reference_constraints(mlneb)
 
     repaired = 0
 
@@ -212,7 +288,7 @@ def repair_mlneb_database_targets(mlneb):
     if not hasattr(mlneb, "structures") or not mlneb.structures:
         return
 
-    ref = _as_atoms(mlneb.structures[0])
+    ref, _ref_constraints = get_mlneb_reference_constraints(mlneb)
     fixed = set(_fixed_indices(ref))
     natoms = len(ref)
     free = [i for i in range(natoms) if i not in fixed]
@@ -584,7 +660,7 @@ def repair_mlneb_database_features(mlneb):
     if not hasattr(mlneb, "structures") or not mlneb.structures:
         return
 
-    ref = _as_atoms(mlneb.structures[0])
+    ref, _ref_constraints = get_mlneb_reference_constraints(mlneb)
     natoms = len(ref)
     fixed = set(_fixed_indices(ref))
 
@@ -684,8 +760,7 @@ def apply_mlneb_reference_constraints_to_atoms(mlneb, atoms, label="atoms"):
     """Apply mlneb.structures[0] constraints to one external Atoms object."""
     if not hasattr(mlneb, "structures") or not mlneb.structures:
         return atoms
-    ref = _as_atoms(mlneb.structures[0])
-    ref_constraints = deepcopy(ref.constraints)
+    ref, ref_constraints = get_mlneb_reference_constraints(mlneb)
     _apply_reference_constraints(
         _as_atoms(atoms),
         ref,
@@ -709,10 +784,10 @@ def install_mlneb_constraint_guard(mlneb):
     originals = []
 
     def get_ref():
-        if not hasattr(mlneb, "structures") or not mlneb.structures:
+        try:
+            return get_mlneb_reference_constraints(mlneb)
+        except Exception:
             return None, None
-        ref = _as_atoms(mlneb.structures[0])
-        return ref, deepcopy(ref.constraints)
 
     def repair_any(obj, ref, ref_constraints, label, depth=0):
         if obj is None or ref is None:

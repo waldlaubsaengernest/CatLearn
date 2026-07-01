@@ -375,8 +375,7 @@ def phase_load_eval():
     is_predicted = apply_prediction_payload(mlneb)
 
     mlneb.finalize_external_evaluation(evaluated, is_predicted=is_predicted)
-    repair_mlneb_internal_constraints(mlneb)
-    repair_mlneb_database_targets(mlneb)
+    repair_mlneb_training_state(mlneb)
 
     mlneb.print_statement()
     save_state(mlneb)

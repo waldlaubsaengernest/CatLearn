@@ -271,7 +271,7 @@ def main():
         al_step = int(os.environ.get("AL_STEP", "1"))
 
         try:
-            from .adjust_constrains import (
+            from catlearn.scripts.adjust_constrains import (
                 repair_mlneb_internal_constraints,
                 repair_mlneb_database_targets,
                 repair_mlneb_training_state,
