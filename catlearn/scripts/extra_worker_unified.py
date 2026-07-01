@@ -255,7 +255,7 @@ def main():
         al_step = int(os.environ.get("AL_STEP", "1"))
 
         try:
-            from catlearn.scripts.mlneb_workflow_unified import (
+            from .adjust_constrains import (
                 repair_mlneb_internal_constraints,
                 repair_mlneb_database_targets,
                 repair_mlneb_training_state,
@@ -320,7 +320,7 @@ def main():
 
         payloads = make_candidate_payloads(mlneb, candidates)
 
-        repair_mlneb_internal_constraints(mlneb)
+        repair_mlneb_training_state(mlneb)
 
         if rank == 0:
             dump_data = {
