@@ -115,12 +115,80 @@ def repair_mlneb_internal_constraints(mlneb):
             )
 
 
+
 def install_mlneb_constraint_guard(mlneb):
     """Temporarily guard CatLearn structure-copy calls that may drop constraints.
 
     The returned uninstall function MUST be called before pickling mlneb.
+
+    Important:
+    A plain repair_mlneb_internal_constraints(mlneb) is not sufficient here,
+    because LocalNEB.copy_atoms/get_atoms_property may operate on a freshly
+    copied local Atoms/Structure object before it is stored back into
+    mlneb.best_structures.  Therefore this guard also repairs Atoms-like objects
+    found in method args, kwargs and return values.
     """
     originals = []
+
+    def get_ref():
+        if not hasattr(mlneb, "structures") or not mlneb.structures:
+            return None, None
+        ref = _as_atoms(mlneb.structures[0])
+        return ref, deepcopy(ref.constraints)
+
+    def repair_any(obj, ref, ref_constraints, label, depth=0):
+        if obj is None or ref is None:
+            return
+
+        # Avoid accidentally walking huge/nested arbitrary objects forever.
+        if depth > 3:
+            return
+
+        atoms = _as_atoms(obj)
+        if hasattr(atoms, "get_atomic_numbers") and hasattr(atoms, "set_constraint"):
+            try:
+                _apply_reference_constraints(
+                    atoms,
+                    ref,
+                    ref_constraints=ref_constraints,
+                    label=label,
+                )
+            except RuntimeError:
+                # Real atom-order mismatch should still be fatal.
+                raise
+            except Exception as exc:
+                raise RuntimeError(f"{label}: failed to repair constraints: {exc}") from exc
+            return
+
+        if isinstance(obj, (list, tuple)):
+            for i, item in enumerate(obj):
+                repair_any(item, ref, ref_constraints, f"{label}[{i}]", depth + 1)
+            return
+
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                # Candidate payload dicts usually store the actual Atoms under
+                # "atoms"; repairing all values is still safe because non-Atoms
+                # values are ignored.
+                repair_any(value, ref, ref_constraints, f"{label}[{key!r}]", depth + 1)
+            return
+
+    def repair_call_objects(args, kwargs, label):
+        ref, ref_constraints = get_ref()
+        if ref is None:
+            return
+
+        for i, arg in enumerate(args):
+            repair_any(arg, ref, ref_constraints, f"{label}.arg{i}")
+        for key, value in kwargs.items():
+            repair_any(value, ref, ref_constraints, f"{label}.kwarg[{key!r}]")
+
+    def repair_result(result, label):
+        ref, ref_constraints = get_ref()
+        if ref is None:
+            return result
+        repair_any(result, ref, ref_constraints, f"{label}.return")
+        return result
 
     def wrap_method(obj, method_name):
         if obj is None or not hasattr(obj, method_name):
@@ -135,8 +203,13 @@ def install_mlneb_constraint_guard(mlneb):
             return
 
         def guarded(*args, **kwargs):
+            label = f"{type(obj).__name__}.{method_name}"
             repair_mlneb_internal_constraints(mlneb)
+            repair_call_objects(args, kwargs, label)
+
             result = current(*args, **kwargs)
+
+            repair_result(result, label)
             repair_mlneb_internal_constraints(mlneb)
             return result
 
@@ -150,6 +223,7 @@ def install_mlneb_constraint_guard(mlneb):
 
         originals.append((obj, method_name, current))
 
+    # MLNEB-level calls.
     for method_name in [
         "find_next_candidates",
         "find_next_candidate",
@@ -159,8 +233,9 @@ def install_mlneb_constraint_guard(mlneb):
     ]:
         wrap_method(mlneb, method_name)
 
-    method = getattr(mlneb, "method", None)
+    # Optimizer wrappers, commonly MLNEB.method = Sequential(...LocalNEB...).
     objects = []
+    method = getattr(mlneb, "method", None)
     if method is not None:
         objects.append(method)
         inner = getattr(method, "method", None)
@@ -186,6 +261,7 @@ def install_mlneb_constraint_guard(mlneb):
         repair_mlneb_internal_constraints(mlneb)
 
     return uninstall_guard
+
 
 def build_calc(magmom=None, workdir=None):
     if USER_MODULE and hasattr(USER_MODULE, "get_calculator"):
