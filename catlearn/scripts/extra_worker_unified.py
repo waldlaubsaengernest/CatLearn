@@ -249,14 +249,12 @@ def main():
             raise RuntimeError(f"failed to import MLNEB constraint fix: {exc}") from exc
 
         repair_mlneb_training_state(mlneb)
-        uninstall_guard = install_mlneb_constraint_guard(mlneb)
 
         try:
             mlneb.extra_initial_data()
         except SystemExit:
             pass
 
-        uninstall_guard()
         repair_mlneb_training_state(mlneb)
 
         comm.Barrier()
