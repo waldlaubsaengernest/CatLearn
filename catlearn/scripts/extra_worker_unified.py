@@ -273,12 +273,11 @@ def main():
                 flush=True,
             )
         try:
-            from catlearn.scripts.mlneb_workflow_unified import (repair_mlneb_internal_constraints,
-                install_mlneb_constraint_guard,)
+            from catlearn.scripts.mlneb_workflow_unified import repair_mlneb_internal_constraints
             repair_mlneb_internal_constraints(mlneb)
         
         except Exception as exc:
-            raise RuntimeError(f"failed to install MLNEB constraint guard in worker: {exc}") from exc
+            raise RuntimeError(f"failed to import MLNEB constraint fix: {exc}") from exc
 
         with open("mlneb_debug_state.pkl", "wb") as f:
             pickle.dump(mlneb, f)
