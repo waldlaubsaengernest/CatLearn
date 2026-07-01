@@ -93,6 +93,8 @@ def _apply_reference_constraints(atoms, ref, ref_constraints=None, label="atoms"
 
 def repair_mlneb_internal_constraints(mlneb):
     """Repair constraints on all Atoms already stored inside the MLNEB object."""
+    repair_mlneb_database_atoms(mlneb)
+
     if not hasattr(mlneb, "structures") or not mlneb.structures:
         return
 
@@ -116,6 +118,107 @@ def repair_mlneb_internal_constraints(mlneb):
 
 
 
+
+
+def _repair_atoms_container_constraints(obj, ref, ref_constraints, label, depth=0):
+    """Recursively repair Atoms/Structure objects inside common containers."""
+    if obj is None:
+        return 0
+    if depth > 4:
+        return 0
+
+    repaired = 0
+
+    atoms = _as_atoms(obj)
+    if hasattr(atoms, "get_atomic_numbers") and hasattr(atoms, "set_constraint"):
+        before = _fixed_count(atoms)
+        _apply_reference_constraints(
+            atoms,
+            ref,
+            ref_constraints=ref_constraints,
+            label=label,
+        )
+        after = _fixed_count(atoms)
+        return int(before != after)
+
+    if isinstance(obj, list):
+        for i, item in enumerate(obj):
+            repaired += _repair_atoms_container_constraints(
+                item, ref, ref_constraints, f"{label}[{i}]", depth + 1
+            )
+        return repaired
+
+    if isinstance(obj, tuple):
+        # tuples are immutable, but contained Atoms objects are mutable.
+        for i, item in enumerate(obj):
+            repaired += _repair_atoms_container_constraints(
+                item, ref, ref_constraints, f"{label}[{i}]", depth + 1
+            )
+        return repaired
+
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            repaired += _repair_atoms_container_constraints(
+                value, ref, ref_constraints, f"{label}[{key!r}]", depth + 1
+            )
+        return repaired
+
+    return repaired
+
+
+def repair_mlneb_database_atoms(mlneb):
+    """Repair constraints on Atoms stored inside mlcalc.mlmodel.database.
+
+    This is required for baseline correction: even if database.targets have the
+    correct dimension, CatLearn recomputes y_base from atoms_list.  If those
+    database atoms lost constraints, y_base becomes mixed-dimensional again.
+    """
+    if not hasattr(mlneb, "structures") or not mlneb.structures:
+        return
+
+    try:
+        db = mlneb.mlcalc.mlmodel.database
+    except Exception:
+        return
+
+    ref = _as_atoms(mlneb.structures[0])
+    ref_constraints = deepcopy(ref.constraints)
+
+    repaired = 0
+
+    # First try common explicit attributes.
+    for attr in [
+        "atoms_list",
+        "atoms",
+        "structures",
+        "data",
+        "images",
+        "candidates",
+    ]:
+        if hasattr(db, attr):
+            try:
+                value = getattr(db, attr)
+            except Exception:
+                continue
+            repaired += _repair_atoms_container_constraints(
+                value, ref, ref_constraints, f"database.{attr}"
+            )
+
+    # Then scan db.__dict__ conservatively for additional containers containing Atoms.
+    for attr, value in getattr(db, "__dict__", {}).items():
+        if attr in {"targets", "features"}:
+            continue
+        if attr.startswith("_"):
+            continue
+        if attr in ["atoms_list", "atoms", "structures", "data", "images", "candidates"]:
+            continue
+        if isinstance(value, (list, tuple, dict)):
+            repaired += _repair_atoms_container_constraints(
+                value, ref, ref_constraints, f"database.{attr}"
+            )
+
+    if repaired:
+        print(f"database atom constraint repair: repaired {repaired} object(s)", flush=True)
 
 def repair_mlneb_database_targets(mlneb):
     """Repair mixed target-vector dimensions in CatLearn's ML database.
@@ -189,6 +292,251 @@ def repair_mlneb_database_targets(mlneb):
         db.targets = new_targets
         print(f"database target repair: repaired {repaired} target(s)", flush=True)
 
+
+
+
+def _get_feature_vector(fp):
+    if fp is None:
+        return None
+
+    if hasattr(fp, "get_vector"):
+        try:
+            return np.asarray(fp.get_vector(), dtype=float).reshape(-1)
+        except Exception:
+            return None
+
+    if isinstance(fp, np.ndarray):
+        return np.asarray(fp, dtype=float).reshape(-1)
+
+    return None
+
+
+class RepairedFeatureVector:
+    """Minimal fallback wrapper for a repaired feature vector."""
+    def __init__(self, vector):
+        self.vector = np.asarray(vector, dtype=float)
+
+    def get_vector(self):
+        return self.vector
+
+
+def _set_feature_vector(fp, vector, label):
+    vector = np.asarray(vector, dtype=float)
+
+    # Prefer mutating the original object, because CatLearn feature objects may
+    # carry additional metadata.  The common attributes are tried first.
+    if hasattr(fp, "set_vector"):
+        try:
+            fp.set_vector(vector)
+            return fp
+        except Exception:
+            pass
+
+    for attr in ["vector", "features", "fingerprint", "fp"]:
+        if hasattr(fp, attr):
+            try:
+                setattr(fp, attr, vector)
+                return fp
+            except Exception:
+                pass
+
+    # Last fallback: mutate all numpy-like attributes whose first dimension is
+    # already handled by _shrink_feature_object_arrays(), and replace the vector
+    # interface by a minimal object if no setter exists.
+    print(
+        f"feature repair: {label} has no known vector setter; "
+        "using RepairedFeatureVector fallback",
+        flush=True,
+    )
+    return RepairedFeatureVector(vector)
+
+
+def _shrink_feature_object_arrays(fp, keep_indices, all_pair_dim):
+    """Shrink pair-indexed arrays inside a feature object when possible.
+
+    This is deliberately conservative: only arrays whose first dimension is
+    exactly the all-pair feature dimension are changed.
+    """
+    changed = 0
+
+    data = getattr(fp, "__dict__", None)
+    if not isinstance(data, dict):
+        return changed
+
+    for attr, value in list(data.items()):
+        try:
+            arr = np.asarray(value)
+        except Exception:
+            continue
+
+        if arr.ndim >= 1 and arr.shape[0] == all_pair_dim:
+            try:
+                setattr(fp, attr, arr[keep_indices, ...])
+                changed += 1
+            except Exception:
+                pass
+
+    return changed
+
+
+def _repair_feature_item(fp, keep_indices, expected_dim, all_pair_dim, label):
+    vec = _get_feature_vector(fp)
+    if vec is None:
+        return fp, 0
+
+    if vec.size == expected_dim:
+        return fp, 0
+
+    if vec.size == all_pair_dim:
+        new_vec = vec[keep_indices]
+        _shrink_feature_object_arrays(fp, keep_indices, all_pair_dim)
+        fp = _set_feature_vector(fp, new_vec, label)
+        print(
+            f"feature repair: {label} dim {vec.size} -> {expected_dim}",
+            flush=True,
+        )
+        return fp, 1
+
+    raise RuntimeError(
+        f"{label}: unexpected feature dimension {vec.size}; "
+        f"expected {expected_dim} or {all_pair_dim}"
+    )
+
+
+def _repair_feature_container(obj, keep_indices, expected_dim, all_pair_dim, label, depth=0):
+    if obj is None or depth > 4:
+        return obj, 0
+
+    if isinstance(obj, list):
+        repaired = 0
+        for i, item in enumerate(obj):
+            obj[i], n = _repair_feature_container(
+                item, keep_indices, expected_dim, all_pair_dim,
+                f"{label}[{i}]", depth + 1
+            )
+            repaired += n
+        return obj, repaired
+
+    if isinstance(obj, tuple):
+        repaired = 0
+        new_items = []
+        for i, item in enumerate(obj):
+            new_item, n = _repair_feature_container(
+                item, keep_indices, expected_dim, all_pair_dim,
+                f"{label}[{i}]", depth + 1
+            )
+            new_items.append(new_item)
+            repaired += n
+        return tuple(new_items), repaired
+
+    if isinstance(obj, dict):
+        repaired = 0
+        for key, value in list(obj.items()):
+            obj[key], n = _repair_feature_container(
+                value, keep_indices, expected_dim, all_pair_dim,
+                f"{label}[{key!r}]", depth + 1
+            )
+            repaired += n
+        return obj, repaired
+
+    fp, repaired = _repair_feature_item(
+        obj, keep_indices, expected_dim, all_pair_dim, label
+    )
+    return fp, repaired
+
+
+def repair_mlneb_database_features(mlneb):
+    """Repair mixed constrained/unconstrained stored fingerprint dimensions.
+
+    For a 79 atom system with 36 fixed atoms:
+        all_pair_dim = 79 * 78 / 2 = 3081
+        expected_dim = all_pair_dim - 36 * 35 / 2 = 2451
+
+    The repair removes fixed-fixed pair entries from all-pair fingerprints.
+    It is a no-op when all fingerprints already have expected_dim.
+    """
+    if not hasattr(mlneb, "structures") or not mlneb.structures:
+        return
+
+    ref = _as_atoms(mlneb.structures[0])
+    natoms = len(ref)
+    fixed = set(_fixed_indices(ref))
+
+    if not fixed:
+        return
+
+    all_pair_dim = natoms * (natoms - 1) // 2
+    fixed_fixed_dim = len(fixed) * (len(fixed) - 1) // 2
+    expected_dim = all_pair_dim - fixed_fixed_dim
+
+    keep_indices = []
+    k = 0
+    for i in range(natoms):
+        for j in range(i + 1, natoms):
+            if not (i in fixed and j in fixed):
+                keep_indices.append(k)
+            k += 1
+    keep_indices = np.asarray(keep_indices, dtype=int)
+
+    repaired = 0
+
+    objects = []
+
+    try:
+        db = mlneb.mlcalc.mlmodel.database
+        objects.append(("database", db))
+    except Exception:
+        db = None
+
+    try:
+        objects.append(("mlmodel", mlneb.mlcalc.mlmodel))
+    except Exception:
+        pass
+
+    for obj_label, obj in objects:
+        # Explicit feature attribute first.
+        if hasattr(obj, "features"):
+            try:
+                value = getattr(obj, "features")
+                new_value, n = _repair_feature_container(
+                    value, keep_indices, expected_dim, all_pair_dim,
+                    f"{obj_label}.features"
+                )
+                if n:
+                    setattr(obj, "features", new_value)
+                    repaired += n
+            except Exception:
+                raise
+
+        # Conservative scan for other feature-like containers.
+        for attr, value in getattr(obj, "__dict__", {}).items():
+            if attr == "features" or attr.startswith("_"):
+                continue
+            if "feature" not in attr.lower() and "finger" not in attr.lower():
+                continue
+            if not isinstance(value, (list, tuple, dict)):
+                continue
+
+            new_value, n = _repair_feature_container(
+                value, keep_indices, expected_dim, all_pair_dim,
+                f"{obj_label}.{attr}"
+            )
+            if n:
+                try:
+                    setattr(obj, attr, new_value)
+                except Exception:
+                    pass
+                repaired += n
+
+    if repaired:
+        print(f"feature repair: repaired {repaired} fingerprint object(s)", flush=True)
+
+def repair_mlneb_training_state(mlneb):
+    """Run all non-persistent MLNEB consistency repairs needed before training."""
+    repair_mlneb_internal_constraints(mlneb)
+    repair_mlneb_database_atoms(mlneb)
+    repair_mlneb_database_features(mlneb)
+    repair_mlneb_database_targets(mlneb)
 
 def apply_mlneb_reference_constraints_to_atoms(mlneb, atoms, label="atoms"):
     """Apply mlneb.structures[0] constraints to one external Atoms object."""
