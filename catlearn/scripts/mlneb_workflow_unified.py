@@ -295,6 +295,7 @@ def repair_mlneb_database_targets(mlneb):
 
 
 
+
 def _get_feature_vector(fp):
     if fp is None:
         return None
@@ -311,20 +312,37 @@ def _get_feature_vector(fp):
     return None
 
 
-class RepairedFeatureVector:
-    """Minimal fallback wrapper for a repaired feature vector."""
-    def __init__(self, vector):
+def _get_feature_derivatives(fp):
+    if fp is None:
+        return None
+
+    if hasattr(fp, "get_derivatives"):
+        try:
+            return np.asarray(fp.get_derivatives(), dtype=float)
+        except Exception:
+            return None
+
+    return None
+
+
+class RepairedFeatureObject:
+    """Minimal fallback wrapper for repaired feature vector and derivatives."""
+    def __init__(self, vector, derivatives=None):
         self.vector = np.asarray(vector, dtype=float)
+        self.derivatives = None if derivatives is None else np.asarray(derivatives, dtype=float)
 
     def get_vector(self):
         return self.vector
+
+    def get_derivatives(self):
+        if self.derivatives is None:
+            raise AttributeError("No derivatives stored in RepairedFeatureObject")
+        return self.derivatives
 
 
 def _set_feature_vector(fp, vector, label):
     vector = np.asarray(vector, dtype=float)
 
-    # Prefer mutating the original object, because CatLearn feature objects may
-    # carry additional metadata.  The common attributes are tried first.
     if hasattr(fp, "set_vector"):
         try:
             fp.set_vector(vector)
@@ -340,22 +358,49 @@ def _set_feature_vector(fp, vector, label):
             except Exception:
                 pass
 
-    # Last fallback: mutate all numpy-like attributes whose first dimension is
-    # already handled by _shrink_feature_object_arrays(), and replace the vector
-    # interface by a minimal object if no setter exists.
-    print(
-        f"feature repair: {label} has no known vector setter; "
-        "using RepairedFeatureVector fallback",
-        flush=True,
-    )
-    return RepairedFeatureVector(vector)
+    return RepairedFeatureObject(vector, _get_feature_derivatives(fp))
 
 
-def _shrink_feature_object_arrays(fp, keep_indices, all_pair_dim):
-    """Shrink pair-indexed arrays inside a feature object when possible.
+def _set_feature_derivatives(fp, derivatives, label):
+    derivatives = np.asarray(derivatives, dtype=float)
 
-    This is deliberately conservative: only arrays whose first dimension is
-    exactly the all-pair feature dimension are changed.
+    if hasattr(fp, "set_derivatives"):
+        try:
+            fp.set_derivatives(derivatives)
+            return fp
+        except Exception:
+            pass
+
+    for attr in ["derivatives", "dfeatures", "fingerprint_derivatives", "fp_deriv", "deriv"]:
+        if hasattr(fp, attr):
+            try:
+                setattr(fp, attr, derivatives)
+                return fp
+            except Exception:
+                pass
+
+    vec = _get_feature_vector(fp)
+    if vec is not None:
+        print(
+            f"feature derivative repair: {label} has no known derivative setter; "
+            "using RepairedFeatureObject fallback",
+            flush=True,
+        )
+        return RepairedFeatureObject(vec, derivatives)
+
+    return fp
+
+
+def _shrink_feature_object_arrays(fp, keep_feature_indices, keep_coord_indices,
+                                  all_pair_dim, all_coord_dim):
+    """Shrink feature/derivative-like arrays inside a feature object.
+
+    Conservative rule:
+    - first axis equal all_pair_dim -> keep non fixed-fixed pair rows
+    - second axis equal all_coord_dim -> keep free-atom coordinate columns
+
+    This covers arrays used by get_vector/get_derivatives in common CatLearn
+    feature objects without touching unrelated arrays.
     """
     changed = 0
 
@@ -369,9 +414,20 @@ def _shrink_feature_object_arrays(fp, keep_indices, all_pair_dim):
         except Exception:
             continue
 
-        if arr.ndim >= 1 and arr.shape[0] == all_pair_dim:
+        new = arr
+        did = False
+
+        if new.ndim >= 1 and new.shape[0] == all_pair_dim:
+            new = new[keep_feature_indices, ...]
+            did = True
+
+        if new.ndim >= 2 and new.shape[1] == all_coord_dim:
+            new = new[:, keep_coord_indices, ...]
+            did = True
+
+        if did:
             try:
-                setattr(fp, attr, arr[keep_indices, ...])
+                setattr(fp, attr, new)
                 changed += 1
             except Exception:
                 pass
@@ -379,31 +435,111 @@ def _shrink_feature_object_arrays(fp, keep_indices, all_pair_dim):
     return changed
 
 
-def _repair_feature_item(fp, keep_indices, expected_dim, all_pair_dim, label):
-    vec = _get_feature_vector(fp)
-    if vec is None:
+def _repair_feature_derivatives(fp, keep_feature_indices, keep_coord_indices,
+                                expected_feature_dim, all_pair_dim,
+                                expected_coord_dim, all_coord_dim, label):
+    deriv = _get_feature_derivatives(fp)
+    if deriv is None:
         return fp, 0
 
-    if vec.size == expected_dim:
-        return fp, 0
+    arr = np.asarray(deriv, dtype=float)
 
-    if vec.size == all_pair_dim:
-        new_vec = vec[keep_indices]
-        _shrink_feature_object_arrays(fp, keep_indices, all_pair_dim)
-        fp = _set_feature_vector(fp, new_vec, label)
+    if arr.ndim != 2:
+        raise RuntimeError(
+            f"{label}: unexpected derivative array rank {arr.ndim}; "
+            f"shape={arr.shape}"
+        )
+
+    original_shape = arr.shape
+    changed = False
+
+    # CatLearn expects shape (n_features, n_force_components).
+    if arr.shape[0] == all_pair_dim:
+        arr = arr[keep_feature_indices, :]
+        changed = True
+    elif arr.shape[0] == expected_feature_dim:
+        pass
+    else:
+        raise RuntimeError(
+            f"{label}: unexpected derivative feature dimension {arr.shape[0]}; "
+            f"expected {expected_feature_dim} or {all_pair_dim}; "
+            f"full shape={original_shape}"
+        )
+
+    if arr.shape[1] == all_coord_dim:
+        arr = arr[:, keep_coord_indices]
+        changed = True
+    elif arr.shape[1] == expected_coord_dim:
+        pass
+    else:
+        raise RuntimeError(
+            f"{label}: unexpected derivative coordinate dimension {arr.shape[1]}; "
+            f"expected {expected_coord_dim} or {all_coord_dim}; "
+            f"full shape={original_shape}"
+        )
+
+    if changed:
+        fp = _set_feature_derivatives(fp, arr, label)
         print(
-            f"feature repair: {label} dim {vec.size} -> {expected_dim}",
+            f"feature derivative repair: {label} shape {original_shape} -> {arr.shape}",
             flush=True,
         )
         return fp, 1
 
-    raise RuntimeError(
-        f"{label}: unexpected feature dimension {vec.size}; "
-        f"expected {expected_dim} or {all_pair_dim}"
+    return fp, 0
+
+
+def _repair_feature_item(fp, keep_feature_indices, keep_coord_indices,
+                         expected_feature_dim, all_pair_dim,
+                         expected_coord_dim, all_coord_dim, label):
+    repaired = 0
+
+    vec = _get_feature_vector(fp)
+    if vec is not None:
+        if vec.size == expected_feature_dim:
+            pass
+        elif vec.size == all_pair_dim:
+            new_vec = vec[keep_feature_indices]
+            fp = _set_feature_vector(fp, new_vec, label)
+            print(
+                f"feature repair: {label} dim {vec.size} -> {expected_feature_dim}",
+                flush=True,
+            )
+            repaired += 1
+        else:
+            raise RuntimeError(
+                f"{label}: unexpected feature dimension {vec.size}; "
+                f"expected {expected_feature_dim} or {all_pair_dim}"
+            )
+
+    # Mutate any derivative-like object arrays before reading get_derivatives().
+    _shrink_feature_object_arrays(
+        fp,
+        keep_feature_indices,
+        keep_coord_indices,
+        all_pair_dim,
+        all_coord_dim,
     )
 
+    fp, n = _repair_feature_derivatives(
+        fp,
+        keep_feature_indices,
+        keep_coord_indices,
+        expected_feature_dim,
+        all_pair_dim,
+        expected_coord_dim,
+        all_coord_dim,
+        label,
+    )
+    repaired += n
 
-def _repair_feature_container(obj, keep_indices, expected_dim, all_pair_dim, label, depth=0):
+    return fp, repaired
+
+
+def _repair_feature_container(obj, keep_feature_indices, keep_coord_indices,
+                              expected_feature_dim, all_pair_dim,
+                              expected_coord_dim, all_coord_dim,
+                              label, depth=0):
     if obj is None or depth > 4:
         return obj, 0
 
@@ -411,7 +547,9 @@ def _repair_feature_container(obj, keep_indices, expected_dim, all_pair_dim, lab
         repaired = 0
         for i, item in enumerate(obj):
             obj[i], n = _repair_feature_container(
-                item, keep_indices, expected_dim, all_pair_dim,
+                item, keep_feature_indices, keep_coord_indices,
+                expected_feature_dim, all_pair_dim,
+                expected_coord_dim, all_coord_dim,
                 f"{label}[{i}]", depth + 1
             )
             repaired += n
@@ -422,7 +560,9 @@ def _repair_feature_container(obj, keep_indices, expected_dim, all_pair_dim, lab
         new_items = []
         for i, item in enumerate(obj):
             new_item, n = _repair_feature_container(
-                item, keep_indices, expected_dim, all_pair_dim,
+                item, keep_feature_indices, keep_coord_indices,
+                expected_feature_dim, all_pair_dim,
+                expected_coord_dim, all_coord_dim,
                 f"{label}[{i}]", depth + 1
             )
             new_items.append(new_item)
@@ -433,14 +573,23 @@ def _repair_feature_container(obj, keep_indices, expected_dim, all_pair_dim, lab
         repaired = 0
         for key, value in list(obj.items()):
             obj[key], n = _repair_feature_container(
-                value, keep_indices, expected_dim, all_pair_dim,
+                value, keep_feature_indices, keep_coord_indices,
+                expected_feature_dim, all_pair_dim,
+                expected_coord_dim, all_coord_dim,
                 f"{label}[{key!r}]", depth + 1
             )
             repaired += n
         return obj, repaired
 
     fp, repaired = _repair_feature_item(
-        obj, keep_indices, expected_dim, all_pair_dim, label
+        obj,
+        keep_feature_indices,
+        keep_coord_indices,
+        expected_feature_dim,
+        all_pair_dim,
+        expected_coord_dim,
+        all_coord_dim,
+        label,
     )
     return fp, repaired
 
@@ -450,10 +599,13 @@ def repair_mlneb_database_features(mlneb):
 
     For a 79 atom system with 36 fixed atoms:
         all_pair_dim = 79 * 78 / 2 = 3081
-        expected_dim = all_pair_dim - 36 * 35 / 2 = 2451
+        expected_feature_dim = all_pair_dim - 36 * 35 / 2 = 2451
+        all_coord_dim = 3 * 79 = 237
+        expected_coord_dim = 3 * (79 - 36) = 129
 
-    The repair removes fixed-fixed pair entries from all-pair fingerprints.
-    It is a no-op when all fingerprints already have expected_dim.
+    The repair removes:
+    - fixed-fixed pair entries from feature vectors / derivative rows
+    - fixed-atom coordinate components from derivative columns
     """
     if not hasattr(mlneb, "structures") or not mlneb.structures:
         return
@@ -467,16 +619,25 @@ def repair_mlneb_database_features(mlneb):
 
     all_pair_dim = natoms * (natoms - 1) // 2
     fixed_fixed_dim = len(fixed) * (len(fixed) - 1) // 2
-    expected_dim = all_pair_dim - fixed_fixed_dim
+    expected_feature_dim = all_pair_dim - fixed_fixed_dim
 
-    keep_indices = []
+    all_coord_dim = 3 * natoms
+    free_atoms = [i for i in range(natoms) if i not in fixed]
+    expected_coord_dim = 3 * len(free_atoms)
+
+    keep_feature_indices = []
     k = 0
     for i in range(natoms):
         for j in range(i + 1, natoms):
             if not (i in fixed and j in fixed):
-                keep_indices.append(k)
+                keep_feature_indices.append(k)
             k += 1
-    keep_indices = np.asarray(keep_indices, dtype=int)
+    keep_feature_indices = np.asarray(keep_feature_indices, dtype=int)
+
+    keep_coord_indices = []
+    for i in free_atoms:
+        keep_coord_indices.extend([3 * i, 3 * i + 1, 3 * i + 2])
+    keep_coord_indices = np.asarray(keep_coord_indices, dtype=int)
 
     repaired = 0
 
@@ -486,7 +647,7 @@ def repair_mlneb_database_features(mlneb):
         db = mlneb.mlcalc.mlmodel.database
         objects.append(("database", db))
     except Exception:
-        db = None
+        pass
 
     try:
         objects.append(("mlmodel", mlneb.mlcalc.mlmodel))
@@ -494,21 +655,22 @@ def repair_mlneb_database_features(mlneb):
         pass
 
     for obj_label, obj in objects:
-        # Explicit feature attribute first.
         if hasattr(obj, "features"):
-            try:
-                value = getattr(obj, "features")
-                new_value, n = _repair_feature_container(
-                    value, keep_indices, expected_dim, all_pair_dim,
-                    f"{obj_label}.features"
-                )
-                if n:
-                    setattr(obj, "features", new_value)
-                    repaired += n
-            except Exception:
-                raise
+            value = getattr(obj, "features")
+            new_value, n = _repair_feature_container(
+                value,
+                keep_feature_indices,
+                keep_coord_indices,
+                expected_feature_dim,
+                all_pair_dim,
+                expected_coord_dim,
+                all_coord_dim,
+                f"{obj_label}.features"
+            )
+            if n:
+                setattr(obj, "features", new_value)
+                repaired += n
 
-        # Conservative scan for other feature-like containers.
         for attr, value in getattr(obj, "__dict__", {}).items():
             if attr == "features" or attr.startswith("_"):
                 continue
@@ -518,7 +680,13 @@ def repair_mlneb_database_features(mlneb):
                 continue
 
             new_value, n = _repair_feature_container(
-                value, keep_indices, expected_dim, all_pair_dim,
+                value,
+                keep_feature_indices,
+                keep_coord_indices,
+                expected_feature_dim,
+                all_pair_dim,
+                expected_coord_dim,
+                all_coord_dim,
                 f"{obj_label}.{attr}"
             )
             if n:
@@ -529,7 +697,7 @@ def repair_mlneb_database_features(mlneb):
                 repaired += n
 
     if repaired:
-        print(f"feature repair: repaired {repaired} fingerprint object(s)", flush=True)
+        print(f"feature repair: repaired {repaired} feature/derivative object(s)", flush=True)
 
 def repair_mlneb_training_state(mlneb):
     """Run all non-persistent MLNEB consistency repairs needed before training."""
