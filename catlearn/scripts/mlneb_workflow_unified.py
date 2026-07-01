@@ -116,6 +116,94 @@ def repair_mlneb_internal_constraints(mlneb):
 
 
 
+
+def repair_mlneb_database_targets(mlneb):
+    """Repair mixed target-vector dimensions in CatLearn's ML database.
+
+    CatLearn force-training targets are vectors:
+        [energy, force components for active/free atoms]
+
+    If a newly added DFT result lost constraints, its target may become
+        1 + 3 * natoms
+    while the correct constrained target is
+        1 + 3 * nfree
+
+    This function converts all-atom target vectors to free-atom target vectors
+    using mlneb.structures[0] as the constraint reference. It is a no-op for
+    already clean states.
+    """
+    if not hasattr(mlneb, "structures") or not mlneb.structures:
+        return
+
+    ref = _as_atoms(mlneb.structures[0])
+    fixed = set(_fixed_indices(ref))
+    natoms = len(ref)
+    free = [i for i in range(natoms) if i not in fixed]
+
+    expected_dim = 1 + 3 * len(free)
+    all_atom_dim = 1 + 3 * natoms
+
+    db = None
+    try:
+        db = mlneb.mlcalc.mlmodel.database
+    except Exception:
+        return
+
+    targets = getattr(db, "targets", None)
+    if targets is None:
+        return
+
+    repaired = 0
+    new_targets = []
+
+    for i, target in enumerate(targets):
+        arr = np.asarray(target, dtype=float).reshape(-1)
+
+        if arr.size == expected_dim:
+            new_targets.append(arr)
+            continue
+
+        if arr.size == all_atom_dim:
+            energy = float(arr[0])
+            forces_all = arr[1:].reshape(natoms, 3)
+            forces_free = forces_all[free].reshape(-1)
+            fixed_forces = forces_all[list(sorted(fixed))] if fixed else np.empty((0, 3))
+
+            max_fixed_force = float(np.max(np.abs(fixed_forces))) if fixed_forces.size else 0.0
+            print(
+                f"database target repair: target {i} dim {arr.size} -> {expected_dim} "
+                f"(removed fixed atom forces; max_fixed_force={max_fixed_force:.3e})",
+                flush=True,
+            )
+
+            new_targets.append(np.concatenate(([energy], forces_free)))
+            repaired += 1
+            continue
+
+        raise RuntimeError(
+            f"database target {i} has unexpected dimension {arr.size}; "
+            f"expected {expected_dim} or {all_atom_dim}"
+        )
+
+    if repaired:
+        db.targets = new_targets
+        print(f"database target repair: repaired {repaired} target(s)", flush=True)
+
+
+def apply_mlneb_reference_constraints_to_atoms(mlneb, atoms, label="atoms"):
+    """Apply mlneb.structures[0] constraints to one external Atoms object."""
+    if not hasattr(mlneb, "structures") or not mlneb.structures:
+        return atoms
+    ref = _as_atoms(mlneb.structures[0])
+    ref_constraints = deepcopy(ref.constraints)
+    _apply_reference_constraints(
+        _as_atoms(atoms),
+        ref,
+        ref_constraints=ref_constraints,
+        label=label,
+    )
+    return atoms
+
 def install_mlneb_constraint_guard(mlneb):
     """Temporarily guard CatLearn structure-copy calls that may drop constraints.
 
@@ -555,10 +643,37 @@ def phase_load_eval():
 
     evaluated = read_evaluated_atoms(eval_dir)
 
+    # VASP/vasprun/OUTCAR readers can lose ASE constraints.  This must happen
+    # BEFORE finalize_external_evaluation(), otherwise CatLearn writes a target
+    # vector with all-atom forces instead of free-atom forces.
+    apply_mlneb_reference_constraints_to_atoms(
+        mlneb,
+        evaluated,
+        label=f"evaluated result from {eval_dir}",
+    )
+
+    # Normalize the SinglePointCalculator payload after applying constraints.
+    # Keep the raw all-atom forces in calc.results; CatLearn will select active
+    # components according to constraints when building targets.
+    energy = float(evaluated.get_potential_energy())
+    forces = np.asarray(evaluated.get_forces(apply_constraint=False), dtype=float)
+    if forces.shape != (len(evaluated), 3):
+        raise RuntimeError(
+            f"evaluated forces have wrong shape {forces.shape}; "
+            f"expected {(len(evaluated), 3)} from {eval_dir}"
+        )
+    evaluated.calc = SinglePointCalculator(
+        evaluated,
+        energy=energy,
+        forces=forces,
+    )
+
     # Candidate evaluations have prediction payload; initial extra_initial_data does not.
     is_predicted = apply_prediction_payload(mlneb)
 
     mlneb.finalize_external_evaluation(evaluated, is_predicted=is_predicted)
+    repair_mlneb_internal_constraints(mlneb)
+    repair_mlneb_database_targets(mlneb)
 
     mlneb.print_statement()
     save_state(mlneb)

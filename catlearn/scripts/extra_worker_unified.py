@@ -257,16 +257,19 @@ def main():
         try:
             from catlearn.scripts.mlneb_workflow_unified import (
                 repair_mlneb_internal_constraints,
+                repair_mlneb_database_targets,
                 install_mlneb_constraint_guard,
             )
         except Exception as exc:
             raise RuntimeError(f"failed to import MLNEB constraint fix: {exc}") from exc
 
         repair_mlneb_internal_constraints(mlneb)
+        repair_mlneb_database_targets(mlneb)
 
         mlneb.train_mlmodel()
 
         repair_mlneb_internal_constraints(mlneb)
+        repair_mlneb_database_targets(mlneb)
 
         pool_size, target_success = get_candidate_pool_settings(mlneb)
         original_n_evaluations_each = getattr(mlneb, "n_evaluations_each", None)
@@ -278,6 +281,7 @@ def main():
         mlneb.n_evaluations_each = pool_size
 
         repair_mlneb_internal_constraints(mlneb)
+        repair_mlneb_database_targets(mlneb)
 
         if rank == 0:
             print(
@@ -306,6 +310,7 @@ def main():
         finally:
             uninstall_guard()
             repair_mlneb_internal_constraints(mlneb)
+            repair_mlneb_database_targets(mlneb)
 
         # Restore the original MLNEB setting before saving the state.
         if original_n_evaluations_each is None:
