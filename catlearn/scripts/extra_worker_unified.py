@@ -254,7 +254,19 @@ def main():
         ml_steps = int(os.environ.get("ML_STEPS", "500"))
         al_step = int(os.environ.get("AL_STEP", "1"))
 
+        try:
+            from catlearn.scripts.mlneb_workflow_unified import (
+                repair_mlneb_internal_constraints,
+                install_mlneb_constraint_guard,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"failed to import MLNEB constraint fix: {exc}") from exc
+
+        repair_mlneb_internal_constraints(mlneb)
+
         mlneb.train_mlmodel()
+
+        repair_mlneb_internal_constraints(mlneb)
 
         pool_size, target_success = get_candidate_pool_settings(mlneb)
         original_n_evaluations_each = getattr(mlneb, "n_evaluations_each", None)
@@ -265,6 +277,8 @@ def main():
         # the usual n_evaluations_each is only 1.
         mlneb.n_evaluations_each = pool_size
 
+        repair_mlneb_internal_constraints(mlneb)
+
         if rank == 0:
             print(
                 f"Requesting candidate pool: pool_size={pool_size}, "
@@ -272,23 +286,26 @@ def main():
                 f"fallback_order={os.environ.get('FALLBACK_ORDER', 'uncertainty')}",
                 flush=True,
             )
-        try:
-            from catlearn.scripts.mlneb_workflow_unified import repair_mlneb_internal_constraints
-            repair_mlneb_internal_constraints(mlneb)
-        
-        except Exception as exc:
-            raise RuntimeError(f"failed to import MLNEB constraint fix: {exc}") from exc
 
-        with open("mlneb_debug_state.pkl", "wb") as f:
-            pickle.dump(mlneb, f)
-            
-        candidates, method_converged = mlneb.find_next_candidates(
-            fmax=mlneb.scale_fmax * fmax,
-            step=al_step,
-            ml_steps=ml_steps,
-            max_unc=max_unc,
-            dtrust=None,
-        )
+        # Debug pickle is written before installing the temporary guard, so no
+        # wrapper functions are persisted.
+        if rank == 0:
+            with open("mlneb_debug_state.pkl", "wb") as f:
+                pickle.dump(mlneb, f)
+        comm.Barrier()
+
+        uninstall_guard = install_mlneb_constraint_guard(mlneb)
+        try:
+            candidates, method_converged = mlneb.find_next_candidates(
+                fmax=mlneb.scale_fmax * fmax,
+                step=al_step,
+                ml_steps=ml_steps,
+                max_unc=max_unc,
+                dtrust=None,
+            )
+        finally:
+            uninstall_guard()
+            repair_mlneb_internal_constraints(mlneb)
 
         # Restore the original MLNEB setting before saving the state.
         if original_n_evaluations_each is None:
@@ -300,6 +317,8 @@ def main():
             mlneb.n_evaluations_each = original_n_evaluations_each
 
         payloads = make_candidate_payloads(mlneb, candidates)
+
+        repair_mlneb_internal_constraints(mlneb)
 
         if rank == 0:
             dump_data = {

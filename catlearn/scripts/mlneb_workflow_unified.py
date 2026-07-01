@@ -114,6 +114,79 @@ def repair_mlneb_internal_constraints(mlneb):
                 label=f"mlneb.{attr}[{i}]",
             )
 
+
+def install_mlneb_constraint_guard(mlneb):
+    """Temporarily guard CatLearn structure-copy calls that may drop constraints.
+
+    The returned uninstall function MUST be called before pickling mlneb.
+    """
+    originals = []
+
+    def wrap_method(obj, method_name):
+        if obj is None or not hasattr(obj, method_name):
+            return
+
+        try:
+            current = getattr(obj, method_name)
+        except Exception:
+            return
+
+        if getattr(current, "_mlneb_constraint_guard_wrapped", False):
+            return
+
+        def guarded(*args, **kwargs):
+            repair_mlneb_internal_constraints(mlneb)
+            result = current(*args, **kwargs)
+            repair_mlneb_internal_constraints(mlneb)
+            return result
+
+        try:
+            guarded.__name__ = getattr(current, "__name__", method_name)
+            guarded.__doc__ = getattr(current, "__doc__", None)
+            guarded._mlneb_constraint_guard_wrapped = True
+            setattr(obj, method_name, guarded)
+        except Exception:
+            return
+
+        originals.append((obj, method_name, current))
+
+    for method_name in [
+        "find_next_candidates",
+        "find_next_candidate",
+        "initiate_structure",
+        "copy_best_structures",
+        "get_structures",
+    ]:
+        wrap_method(mlneb, method_name)
+
+    method = getattr(mlneb, "method", None)
+    objects = []
+    if method is not None:
+        objects.append(method)
+        inner = getattr(method, "method", None)
+        if inner is not None:
+            objects.append(inner)
+
+    for obj in objects:
+        for method_name in [
+            "get_structures",
+            "get_structures_parallel",
+            "copy_atoms",
+            "get_atoms_property",
+        ]:
+            wrap_method(obj, method_name)
+
+    def uninstall_guard():
+        for obj, method_name, original in reversed(originals):
+            try:
+                setattr(obj, method_name, original)
+            except Exception:
+                pass
+        originals.clear()
+        repair_mlneb_internal_constraints(mlneb)
+
+    return uninstall_guard
+
 def build_calc(magmom=None, workdir=None):
     if USER_MODULE and hasattr(USER_MODULE, "get_calculator"):
         func = USER_MODULE.get_calculator
