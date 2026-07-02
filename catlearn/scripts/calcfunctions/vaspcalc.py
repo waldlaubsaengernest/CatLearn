@@ -217,12 +217,34 @@ class VASPcalc(BaseDFTcalc):
         fail_on_nelm = os.environ.get("VASP_FAIL_ON_NELM", "1").strip().lower()
         fail_on_nelm = fail_on_nelm not in ("0", "false", "no", "off")
 
+        # Official VASP NELM warning is authoritative.  The OSZICAR parser can
+        # otherwise pick up a different/older electronic cycle and incorrectly
+        # accept a failed single point.
+        try:
+            outcar_text = open(outcar, errors="ignore").read()
+        except Exception:
+            outcar_text = ""
+
+        nelm_warning_patterns = [
+            "The electronic self-consistency was not achieved",
+            "number of steps (NELM)",
+        ]
+        if all(pattern in outcar_text for pattern in nelm_warning_patterns):
+            msg = (
+                "[VASP] electronic convergence failed: OUTCAR contains "
+                "VASP NELM warning 'The electronic self-consistency was not "
+                "achieved in the given number of steps (NELM)'."
+            )
+            if fail_on_nelm:
+                raise RuntimeError(msg)
+            print("[VASP] WARNING: " + msg, flush=True)
+
         summary_seen = False
         last_finished_e_step = None
         current_e_step = None
 
         electronic_re = re.compile(
-            r"^\s*(?:DAV|RMM|CG|N|SDA|DMP|MIX)[: ]+\s*([0-9]+)\b",
+            r"^\s*(?:DAV|RMM|CGA|CG|N|SDA|DMP|MIX)[: ]+\s*([0-9]+)\b",
             flags=re.I,
         )
 
@@ -250,10 +272,13 @@ class VASPcalc(BaseDFTcalc):
             return
 
         if last_finished_e_step >= nelm:
-            raise RuntimeError(
+            msg = (
                 f"[VASP] last electronic cycle used {last_finished_e_step} "
                 f"steps, NELM={nelm}; treating as unconverged"
             )
+            if fail_on_nelm:
+                raise RuntimeError(msg)
+            print("[VASP] WARNING: " + msg, flush=True)
 
         print(
             f"[VASP] convergence check OK: last electronic cycle used "
