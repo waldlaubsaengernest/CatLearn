@@ -217,27 +217,19 @@ class VASPcalc(BaseDFTcalc):
         fail_on_nelm = os.environ.get("VASP_FAIL_ON_NELM", "1").strip().lower()
         fail_on_nelm = fail_on_nelm not in ("0", "false", "no", "off")
 
-        # Official VASP NELM warning is authoritative.  The OSZICAR parser can
-        # otherwise pick up a different/older electronic cycle and incorrectly
-        # accept a failed single point.
+        # OUTCAR diagnostic.  We still parse OSZICAR first so the error message
+        # can report the actual cycle count, e.g. CGA: 300.  If the VASP warning
+        # is present, the calculation is treated as unconverged even if the
+        # parser misses the final electronic cycle.
         try:
             outcar_text = open(outcar, errors="ignore").read()
         except Exception:
             outcar_text = ""
 
-        nelm_warning_patterns = [
-            "The electronic self-consistency was not achieved",
-            "number of steps (NELM)",
-        ]
-        if all(pattern in outcar_text for pattern in nelm_warning_patterns):
-            msg = (
-                "[VASP] electronic convergence failed: OUTCAR contains "
-                "VASP NELM warning 'The electronic self-consistency was not "
-                "achieved in the given number of steps (NELM)'."
-            )
-            if fail_on_nelm:
-                raise RuntimeError(msg)
-            print("[VASP] WARNING: " + msg, flush=True)
+        vasp_nelm_warning_seen = (
+            "The electronic self-consistency was not achieved" in outcar_text
+            and "number of steps (NELM)" in outcar_text
+        )
 
         summary_seen = False
         last_finished_e_step = None
@@ -275,6 +267,16 @@ class VASPcalc(BaseDFTcalc):
             msg = (
                 f"[VASP] last electronic cycle used {last_finished_e_step} "
                 f"steps, NELM={nelm}; treating as unconverged"
+            )
+            if fail_on_nelm:
+                raise RuntimeError(msg)
+            print("[VASP] WARNING: " + msg, flush=True)
+
+        if vasp_nelm_warning_seen:
+            msg = (
+                "[VASP] OUTCAR contains VASP NELM warning; treating as "
+                f"unconverged. Parsed last electronic cycle: "
+                f"{last_finished_e_step} steps, NELM={nelm}."
             )
             if fail_on_nelm:
                 raise RuntimeError(msg)
