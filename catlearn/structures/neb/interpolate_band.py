@@ -1,3 +1,6 @@
+import os
+
+import numpy as np
 from numpy import ndarray
 from numpy.linalg import norm
 from numpy.random import default_rng
@@ -7,6 +10,72 @@ from ase.build import minimize_rotation_and_translation
 from .improvedneb import ImprovedTangentNEB
 from ...regression.gp.calculator.copy_atoms import copy_atoms
 from ...regression.gp.fingerprint.geometry import mic_distance
+
+
+def _get_reverse_interpolate():
+    """Read atom indices from the REVERSE_INTERPOLATE environment variable."""
+    value = os.environ.get(
+        "reverse_interpolate",
+        os.environ.get("REVERSE_INTERPOLATE", ""),
+    ).strip()
+    if not value:
+        return []
+
+    try:
+        return [
+            int(index.strip())
+            for index in value.split(",")
+            if index.strip()
+        ]
+    except ValueError as exc:
+        raise ValueError(
+            "reverse_interpolate must contain comma-separated integer "
+            "atom indices, for example '72,73'."
+        ) from exc
+
+
+def _get_interpolation_displacement(start, end, mic=False):
+    """Return the displacement used for interpolation."""
+    pos0 = start.get_positions()
+    dist_direct = end.get_positions() - pos0
+
+    if not mic:
+        return dist_direct
+
+    _, dist_mic = mic_distance(
+        dist_direct,
+        cell=start.get_cell(),
+        pbc=start.pbc,
+        use_vector=True,
+    )
+
+    reverse_interpolate = _get_reverse_interpolate()
+    if not reverse_interpolate:
+        return dist_mic
+
+    natoms = len(start)
+    for atom_index in reverse_interpolate:
+        if atom_index < 0 or atom_index >= natoms:
+            raise IndexError(
+                f"reverse_interpolate contains atom index {atom_index}, "
+                f"but the structure has only {natoms} atoms."
+            )
+
+    cell = np.asarray(start.get_cell())
+    pbc = np.asarray(start.pbc, dtype=bool)
+
+    direct_scaled = np.linalg.solve(cell.T, dist_direct.T).T
+    mic_scaled = np.linalg.solve(cell.T, dist_mic.T).T
+
+    # Integer cell translations introduced by the minimum-image convention.
+    image_shift = np.rint(direct_scaled - mic_scaled).astype(int)
+
+    for atom_index in reverse_interpolate:
+        for axis in range(3):
+            if pbc[axis] and image_shift[atom_index, axis] != 0:
+                mic_scaled[atom_index, axis] = direct_scaled[atom_index, axis]
+
+    return mic_scaled @ cell
 
 
 def interpolate(
@@ -281,16 +350,13 @@ def make_linear_interpolation(
     """
     # Get the position of initial state
     pos0 = images[0].get_positions()
-    # Get the distance to the final state
-    dist_vec = images[-1].get_positions() - pos0
-    # Calculate the minimum-image convention if mic=True
-    if mic:
-        _, dist_vec = mic_distance(
-            dist_vec,
-            cell=images[0].get_cell(),
-            pbc=images[0].pbc,
-            use_vector=True,
-        )
+    # Get the displacement to the final state, including the optional
+    # REVERSE_INTERPOLATE correction when MIC is active.
+    dist_vec = _get_interpolation_displacement(
+        images[0],
+        images[-1],
+        mic=mic,
+    )
     # Calculate the distance moved for each image
     dist_vec = dist_vec / float(len(images) - 1)
     # Make random generator if perturbation is used
@@ -570,16 +636,13 @@ def make_end_interpolations(
     n_images = len(images)
     # Get the position of initial state
     pos0 = images[0].get_positions()
-    # Get the distance to the final state
-    dist_vec = images[-1].get_positions() - pos0
-    # Calculate the minimum-image convention if mic=True
-    if mic:
-        _, dist_vec = mic_distance(
-            dist_vec,
-            cell=images[0].get_cell(),
-            pbc=images[0].pbc,
-            use_vector=True,
-        )
+    # Get the displacement to the final state, including the optional
+    # REVERSE_INTERPOLATE correction when MIC is active.
+    dist_vec = _get_interpolation_displacement(
+        images[0],
+        images[-1],
+        mic=mic,
+    )
     # Calculate the scaled distance
     scale_dist = 2.0 * trust_dist / norm(dist_vec)
     # Check if the distance is within the trust distance
