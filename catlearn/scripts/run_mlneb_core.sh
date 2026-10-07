@@ -1,4 +1,6 @@
 #!/bin/bash
+: "${MLNEB_MPI_LAUNCHER:=srun}"
+
 
 INPUT="${1:-${INPUT:-}}"
 D0="${D0:-$PWD}"
@@ -60,7 +62,7 @@ fi
 echo "RESTART=$RESTART"
 
 if [ "${RESTART:-0}" != "1" ]; then
-    srun mlneb-extra-worker initial "$STATE0" "$PENDING" "$CANDIDATES" "$META"
+    ${MLNEB_MPI_LAUNCHER} mlneb-extra-worker initial "$STATE0" "$PENDING" "$CANDIDATES" "$META"
     unset CANDIDATE_INDEX
     mlneb-workflow write_vasp_input
     EVALDIR=$(cat "$D0/current_eval_dir.txt")
@@ -83,7 +85,7 @@ for AL_STEP in $(seq 1 "$AL_STEPS"); do
 
     export AL_STEP
 
-    srun mlneb-extra-worker next "$STATE_AFTER" "$PENDING" "$CANDIDATES" "$META"
+    ${MLNEB_MPI_LAUNCHER} mlneb-extra-worker next "$STATE_AFTER" "$PENDING" "$CANDIDATES" "$META"
 
     NCAND=$(mlneb-workflow count_candidates | tail -n 1)
     echo "AL_STEP=$AL_STEP NCAND=$NCAND"

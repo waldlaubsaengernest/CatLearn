@@ -8,7 +8,6 @@ from ase.calculators.singlepoint import SinglePointCalculator
 
 from .base import BaseDFTcalc
 
-
 class VASPcalc(BaseDFTcalc):
     name = "vasp"
 
@@ -29,7 +28,7 @@ class VASPcalc(BaseDFTcalc):
         command = (
             os.environ.get("MLNEB_CALC_COMMAND")
             or os.environ.get("VASP_COMMAND")
-            or "srun vasp_std"
+            or (os.environ.get("MLNEB_MPI_LAUNCHER", "srun") + " vasp_std")
         )
 
         return {
