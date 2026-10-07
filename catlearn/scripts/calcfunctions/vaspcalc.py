@@ -28,7 +28,7 @@ class VASPcalc(BaseDFTcalc):
         command = (
             os.environ.get("MLNEB_CALC_COMMAND")
             or os.environ.get("VASP_COMMAND")
-            or (os.environ.get("MLNEB_MPI_LAUNCHER", "srun") + " vasp_std")
+            or "srun vasp_std"
         )
 
         return {
